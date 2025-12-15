@@ -161,11 +161,11 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
 
 ### Phase 4: Backtest Engine (FIXED)
 
-- [ ] **4.1** Create `backtest/engine.py` - Corrected implementation
-  - [ ] 4.1.1 **Fix:** Deduct capital on entry, return proceeds on exit
-  - [ ] 4.1.2 **Fix:** Gap handling - exit at bar.open if gap through stop/TP
-  - [ ] 4.1.3 **Fix:** Same-bar SL/TP - check which hit first based on bar.open
-  - [ ] 4.1.4 Track equity at every bar (including unrealized)
+- [x] **4.1** Create `backtest/engine.py` - Corrected implementation
+  - [x] 4.1.1 **Fix:** Deduct capital on entry, return proceeds on exit
+  - [x] 4.1.2 **Fix:** Gap handling - exit at bar.open if gap through stop/TP
+  - [x] 4.1.3 **Fix:** Same-bar SL/TP - check which hit first based on bar.open
+  - [x] 4.1.4 Track equity at every bar (including unrealized)
 - [x] **4.2** Create `backtest/data_loader.py`
   - [x] 4.2.1 Load from `alpaca_historical.db` (116M bars)
   - [x] 4.2.2 Filter by symbol, date range
@@ -203,19 +203,19 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
 
 ### Phase 6: Orchestration (Main Loop)
 
-- [ ] **6.1** Create `main.py` - Trading loop
-  - [ ] 6.1.1 Market hours detection (9:30 AM - 4:00 PM ET)
-  - [ ] 6.1.2 Pre-market startup (9:15 AM) - verify systems
-  - [ ] 6.1.3 5-minute cycle loop
-  - [ ] 6.1.4 Fetch bulk data from VV7
-  - [ ] 6.1.5 Run all strategies on all stocks
-  - [ ] 6.1.6 Rank signals by strength
-  - [ ] 6.1.7 Execute top N signals (within limits)
-  - [ ] 6.1.8 Check exits for open positions
-  - [ ] 6.1.9 Log activity
-  - [ ] 6.1.10 Graceful shutdown at market close
-- [ ] **6.2** Create logging system
-  - [ ] 6.2.1 File logging (logs/trading.log)
+- [x] **6.1** Create `main.py` - Trading loop
+  - [x] 6.1.1 Market hours detection (9:30 AM - 4:00 PM ET)
+  - [x] 6.1.2 Pre-market startup (9:15 AM) - verify systems
+  - [x] 6.1.3 5-minute cycle loop
+  - [x] 6.1.4 Fetch bulk data from VV7
+  - [x] 6.1.5 Run all strategies on all stocks
+  - [x] 6.1.6 Rank signals by strength
+  - [x] 6.1.7 Execute top N signals (within limits)
+  - [x] 6.1.8 Check exits for open positions
+  - [x] 6.1.9 Log activity
+  - [x] 6.1.10 Graceful shutdown at market close
+- [x] **6.2** Create logging system
+  - [x] 6.2.1 File logging (logs/trading.log)
   - [ ] 6.2.2 Structured JSON for future dashboard
 - [ ] **6.3** Add auto-restart on crash
 - [ ] **6.4** Full integration test
@@ -266,7 +266,7 @@ C:\Users\User\Documents\AI\trading_bot\
 ├── [ ] README.md
 ├── [x] requirements.txt
 ├── [x] config.py
-├── [ ] main.py
+├── [x] main.py
 ├── data/
 │   ├── [x] __init__.py
 │   ├── [x] models.py
@@ -291,7 +291,7 @@ C:\Users\User\Documents\AI\trading_bot\
 │   └── [ ] paper.py
 ├── backtest/
 │   ├── [x] __init__.py
-│   ├── [ ] engine.py
+│   ├── [x] engine.py
 │   ├── [x] data_loader.py
 │   └── [x] metrics.py
 ├── tests/
