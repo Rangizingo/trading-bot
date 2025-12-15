@@ -75,9 +75,9 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
 
 ### Phase 1: Foundation (Core Infrastructure)
 
-- [ ] **1.1** Create project folder structure
-- [ ] **1.2** Create `config.py` with all parameters
-- [ ] **1.3** Create `data/models.py` - Bar, Stock, Signal, Position dataclasses
+- [x] **1.1** Create project folder structure
+- [x] **1.2** Create `config.py` with all parameters
+- [x] **1.3** Create `data/models.py` - Bar, Stock, Signal, Position dataclasses
 - [ ] **1.4** Create `core/position.py` - PositionManager with capital tracking
   - [ ] 1.4.1 `open_position()` - deduct capital
   - [ ] 1.4.2 `close_position()` - return proceeds (not just PnL)
@@ -262,23 +262,23 @@ Before going live:
 
 ```
 C:\Users\User\Documents\AI\trading_bot\
-├── [ ] SCOPE.md              ← This document
+├── [x] SCOPE.md              ← This document
 ├── [ ] README.md
-├── [ ] requirements.txt
-├── [ ] config.py
+├── [x] requirements.txt
+├── [x] config.py
 ├── [ ] main.py
 ├── data/
-│   ├── [ ] __init__.py
-│   ├── [ ] models.py
+│   ├── [x] __init__.py
+│   ├── [x] models.py
 │   ├── [ ] vv7_client.py
 │   └── [ ] cache.py
 ├── core/
-│   ├── [ ] __init__.py
+│   ├── [x] __init__.py
 │   ├── [ ] indicators.py
 │   ├── [ ] position.py
 │   └── [ ] risk.py
 ├── strategies/
-│   ├── [ ] __init__.py
+│   ├── [x] __init__.py
 │   ├── [ ] base.py
 │   ├── [ ] connors_rsi.py
 │   ├── [ ] cumulative_rsi.py
@@ -286,21 +286,22 @@ C:\Users\User\Documents\AI\trading_bot\
 │   ├── [ ] keltner_rsi.py
 │   └── [ ] bb_rsi.py
 ├── execution/
-│   ├── [ ] __init__.py
+│   ├── [x] __init__.py
 │   ├── [ ] alpaca.py
 │   └── [ ] paper.py
 ├── backtest/
-│   ├── [ ] __init__.py
+│   ├── [x] __init__.py
 │   ├── [ ] engine.py
 │   ├── [ ] data_loader.py
 │   └── [ ] metrics.py
 ├── tests/
+│   ├── [x] __init__.py
 │   ├── [ ] test_indicators.py
 │   ├── [ ] test_position.py
 │   ├── [ ] test_strategies.py
 │   └── [ ] test_backtest.py
 └── logs/
-    └── [ ] .gitkeep
+    └── [x] .gitkeep
 ```
 
 ---
