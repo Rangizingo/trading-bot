@@ -102,11 +102,11 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
   - [x] 2.1.3 `get_stock_history()` - historical bars
   - [x] 2.1.4 `get_market_timing()` - SPY regime filter
   - [x] 2.1.5 Error handling and retries
-- [ ] **2.2** Create `data/cache.py` - SQLite cache
-  - [ ] 2.2.1 `sync_ratings()` - bulk insert ratings
-  - [ ] 2.2.2 `sync_technicals()` - bulk insert technicals
-  - [ ] 2.2.3 `get_cached_data()` - query cache
-  - [ ] 2.2.4 `is_stale()` - check if refresh needed
+- [x] **2.2** Create `data/cache.py` - SQLite cache
+  - [x] 2.2.1 `sync_ratings()` - bulk insert ratings
+  - [x] 2.2.2 `sync_technicals()` - bulk insert technicals
+  - [x] 2.2.3 `get_cached_data()` - query cache
+  - [x] 2.2.4 `is_stale()` - check if refresh needed
 - [ ] **2.3** Integration test with live VV7 API
 
 **Acceptance:** Can fetch all 9,850 stocks in <30 sec, cache persists
@@ -126,10 +126,10 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
   - [x] 3.1.8 `vwap(highs, lows, closes, volumes)` - Volume weighted
   - [x] 3.1.9 `adx(highs, lows, closes, period)` - **Smoothed DX**
 - [ ] **3.2** Unit tests for all indicators against known values
-- [ ] **3.3** Create `strategies/base.py` - Strategy interface
-  - [ ] 3.3.1 `on_bar()` → Optional[Signal]
-  - [ ] 3.3.2 `reset()` - clear state between symbols
-  - [ ] 3.3.3 Symbol-isolated state (no contamination)
+- [x] **3.3** Create `strategies/base.py` - Strategy interface
+  - [x] 3.3.1 `on_bar()` → Optional[Signal]
+  - [x] 3.3.2 `reset()` - clear state between symbols
+  - [x] 3.3.3 Symbol-isolated state (no contamination)
 - [ ] **3.4** Create `strategies/connors_rsi.py`
   - [ ] 3.4.1 Entry: RSI(2) < 5, Close > 200 MA
   - [ ] 3.4.2 Exit: RSI(2) > 60 **OR** Close > 5 MA
@@ -185,13 +185,13 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
 
 ### Phase 5: Execution Layer (Alpaca Integration)
 
-- [ ] **5.1** Create `execution/alpaca.py`
-  - [ ] 5.1.1 Initialize with API keys from .env
-  - [ ] 5.1.2 `get_account()` - balance, buying power
-  - [ ] 5.1.3 `get_positions()` - current holdings
-  - [ ] 5.1.4 `submit_order()` - market order with SL/TP
-  - [ ] 5.1.5 `close_position()` - market sell
-  - [ ] 5.1.6 Error handling
+- [x] **5.1** Create `execution/alpaca.py`
+  - [x] 5.1.1 Initialize with API keys from .env
+  - [x] 5.1.2 `get_account()` - balance, buying power
+  - [x] 5.1.3 `get_positions()` - current holdings
+  - [x] 5.1.4 `submit_order()` - market order with SL/TP
+  - [x] 5.1.5 `close_position()` - market sell
+  - [x] 5.1.6 Error handling
 - [ ] **5.2** Create `execution/paper.py` - Paper trading wrapper
   - [ ] 5.2.1 Log all orders
   - [ ] 5.2.2 Track P&L
@@ -271,7 +271,7 @@ C:\Users\User\Documents\AI\trading_bot\
 │   ├── [x] __init__.py
 │   ├── [x] models.py
 │   ├── [x] vv7_client.py
-│   └── [ ] cache.py
+│   └── [x] cache.py
 ├── core/
 │   ├── [x] __init__.py
 │   ├── [x] indicators.py
@@ -279,7 +279,7 @@ C:\Users\User\Documents\AI\trading_bot\
 │   └── [x] risk.py
 ├── strategies/
 │   ├── [x] __init__.py
-│   ├── [ ] base.py
+│   ├── [x] base.py
 │   ├── [ ] connors_rsi.py
 │   ├── [ ] cumulative_rsi.py
 │   ├── [ ] vwap_rsi.py
@@ -287,7 +287,7 @@ C:\Users\User\Documents\AI\trading_bot\
 │   └── [ ] bb_rsi.py
 ├── execution/
 │   ├── [x] __init__.py
-│   ├── [ ] alpaca.py
+│   ├── [x] alpaca.py
 │   └── [ ] paper.py
 ├── backtest/
 │   ├── [x] __init__.py
