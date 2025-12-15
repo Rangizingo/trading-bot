@@ -78,16 +78,16 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
 - [x] **1.1** Create project folder structure
 - [x] **1.2** Create `config.py` with all parameters
 - [x] **1.3** Create `data/models.py` - Bar, Stock, Signal, Position dataclasses
-- [ ] **1.4** Create `core/position.py` - PositionManager with capital tracking
-  - [ ] 1.4.1 `open_position()` - deduct capital
-  - [ ] 1.4.2 `close_position()` - return proceeds (not just PnL)
-  - [ ] 1.4.3 `get_available_capital()` - track what's actually free
-  - [ ] 1.4.4 `get_equity()` - capital + unrealized PnL
-- [ ] **1.5** Create `core/risk.py` - Risk management
-  - [ ] 1.5.1 Half-Kelly position sizing
-  - [ ] 1.5.2 Daily drawdown check
-  - [ ] 1.5.3 Total drawdown check
-  - [ ] 1.5.4 Max positions check
+- [x] **1.4** Create `core/position.py` - PositionManager with capital tracking
+  - [x] 1.4.1 `open_position()` - deduct capital
+  - [x] 1.4.2 `close_position()` - return proceeds (not just PnL)
+  - [x] 1.4.3 `get_available_capital()` - track what's actually free
+  - [x] 1.4.4 `get_equity()` - capital + unrealized PnL
+- [x] **1.5** Create `core/risk.py` - Risk management
+  - [x] 1.5.1 Half-Kelly position sizing
+  - [x] 1.5.2 Daily drawdown check
+  - [x] 1.5.3 Total drawdown check
+  - [x] 1.5.4 Max positions check
 - [ ] **1.6** Unit tests for position and risk management
 
 **Acceptance:** Can track capital through open/close cycles accurately
@@ -96,12 +96,12 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
 
 ### Phase 2: Data Layer (VV7 API Integration)
 
-- [ ] **2.1** Create `data/vv7_client.py` - HTTP client
-  - [ ] 2.1.1 `get_bulk_ratings()` - all 9,850 stocks
-  - [ ] 2.1.2 `get_bulk_technicals()` - RSI, MACD, BB, etc.
-  - [ ] 2.1.3 `get_stock_history()` - historical bars
-  - [ ] 2.1.4 `get_market_timing()` - SPY regime filter
-  - [ ] 2.1.5 Error handling and retries
+- [x] **2.1** Create `data/vv7_client.py` - HTTP client
+  - [x] 2.1.1 `get_bulk_ratings()` - all 9,850 stocks
+  - [x] 2.1.2 `get_bulk_technicals()` - RSI, MACD, BB, etc.
+  - [x] 2.1.3 `get_stock_history()` - historical bars
+  - [x] 2.1.4 `get_market_timing()` - SPY regime filter
+  - [x] 2.1.5 Error handling and retries
 - [ ] **2.2** Create `data/cache.py` - SQLite cache
   - [ ] 2.2.1 `sync_ratings()` - bulk insert ratings
   - [ ] 2.2.2 `sync_technicals()` - bulk insert technicals
@@ -115,16 +115,16 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
 
 ### Phase 3: Strategy Engine (Indicators & Strategies)
 
-- [ ] **3.1** Create `core/indicators.py` - CORRECT implementations
-  - [ ] 3.1.1 `rsi(closes, period)` - Wilder's smoothing
-  - [ ] 3.1.2 `ema(values, period)` - Exponential MA
-  - [ ] 3.1.3 `sma(values, period)` - Simple MA
-  - [ ] 3.1.4 `macd(closes, fast, slow, signal)` - **EMA signal line**
-  - [ ] 3.1.5 `bollinger_bands(closes, period, std)` - Upper/Middle/Lower
-  - [ ] 3.1.6 `keltner_channels(closes, highs, lows, period, mult)` - EMA ± ATR
-  - [ ] 3.1.7 `atr(highs, lows, closes, period)` - True Range
-  - [ ] 3.1.8 `vwap(highs, lows, closes, volumes)` - Volume weighted
-  - [ ] 3.1.9 `adx(highs, lows, closes, period)` - **Smoothed DX**
+- [x] **3.1** Create `core/indicators.py` - CORRECT implementations
+  - [x] 3.1.1 `rsi(closes, period)` - Wilder's smoothing
+  - [x] 3.1.2 `ema(values, period)` - Exponential MA
+  - [x] 3.1.3 `sma(values, period)` - Simple MA
+  - [x] 3.1.4 `macd(closes, fast, slow, signal)` - **EMA signal line**
+  - [x] 3.1.5 `bollinger_bands(closes, period, std)` - Upper/Middle/Lower
+  - [x] 3.1.6 `keltner_channels(closes, highs, lows, period, mult)` - EMA ± ATR
+  - [x] 3.1.7 `atr(highs, lows, closes, period)` - True Range
+  - [x] 3.1.8 `vwap(highs, lows, closes, volumes)` - Volume weighted
+  - [x] 3.1.9 `adx(highs, lows, closes, period)` - **Smoothed DX**
 - [ ] **3.2** Unit tests for all indicators against known values
 - [ ] **3.3** Create `strategies/base.py` - Strategy interface
   - [ ] 3.3.1 `on_bar()` → Optional[Signal]
@@ -270,13 +270,13 @@ C:\Users\User\Documents\AI\trading_bot\
 ├── data/
 │   ├── [x] __init__.py
 │   ├── [x] models.py
-│   ├── [ ] vv7_client.py
+│   ├── [x] vv7_client.py
 │   └── [ ] cache.py
 ├── core/
 │   ├── [x] __init__.py
-│   ├── [ ] indicators.py
-│   ├── [ ] position.py
-│   └── [ ] risk.py
+│   ├── [x] indicators.py
+│   ├── [x] position.py
+│   └── [x] risk.py
 ├── strategies/
 │   ├── [x] __init__.py
 │   ├── [ ] base.py
