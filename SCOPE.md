@@ -130,29 +130,29 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
   - [x] 3.3.1 `on_bar()` → Optional[Signal]
   - [x] 3.3.2 `reset()` - clear state between symbols
   - [x] 3.3.3 Symbol-isolated state (no contamination)
-- [ ] **3.4** Create `strategies/connors_rsi.py`
-  - [ ] 3.4.1 Entry: RSI(2) < 5, Close > 200 MA
-  - [ ] 3.4.2 Exit: RSI(2) > 60 **OR** Close > 5 MA
-  - [ ] 3.4.3 Stop: 3%
-- [ ] **3.5** Create `strategies/cumulative_rsi.py`
-  - [ ] 3.5.1 Entry: Sum of RSI(2) over 2 bars < 10
-  - [ ] 3.5.2 Exit: Cumulative RSI > 65
-  - [ ] 3.5.3 Stop: 3%
-  - [ ] 3.5.4 **Fix:** Recalculate fresh each bar, no state
-- [ ] **3.6** Create `strategies/vwap_rsi.py`
-  - [ ] 3.6.1 Entry: Price < VWAP, RSI < 35
-  - [ ] 3.6.2 Exit: Price > VWAP **OR** RSI > 55
-  - [ ] 3.6.3 Stop: 1.5%
-  - [ ] 3.6.4 **Fix:** Reset VWAP daily
-- [ ] **3.7** Create `strategies/keltner_rsi.py`
-  - [ ] 3.7.1 Entry: Price < Lower KC, RSI < 30
-  - [ ] 3.7.2 Exit: Price > Middle KC **OR** RSI > 50
-  - [ ] 3.7.3 Stop: 2%
-- [ ] **3.8** Create `strategies/bb_rsi.py`
-  - [ ] 3.8.1 Entry: Price < Lower BB, RSI < 30
-  - [ ] 3.8.2 Exit: Price > Middle BB **OR** RSI > 50
-  - [ ] 3.8.3 Stop: 2%
-  - [ ] 3.8.4 **Fix:** Simple percentage stop, no complex calculation
+- [x] **3.4** Create `strategies/connors_rsi.py`
+  - [x] 3.4.1 Entry: RSI(2) < 5, Close > 200 MA
+  - [x] 3.4.2 Exit: RSI(2) > 60 **OR** Close > 5 MA
+  - [x] 3.4.3 Stop: 3%
+- [x] **3.5** Create `strategies/cumulative_rsi.py`
+  - [x] 3.5.1 Entry: Sum of RSI(2) over 2 bars < 10
+  - [x] 3.5.2 Exit: Cumulative RSI > 65
+  - [x] 3.5.3 Stop: 3%
+  - [x] 3.5.4 **Fix:** Recalculate fresh each bar, no state
+- [x] **3.6** Create `strategies/vwap_rsi.py`
+  - [x] 3.6.1 Entry: Price < VWAP, RSI < 35
+  - [x] 3.6.2 Exit: Price > VWAP **OR** RSI > 55
+  - [x] 3.6.3 Stop: 1.5%
+  - [x] 3.6.4 **Fix:** Reset VWAP daily
+- [x] **3.7** Create `strategies/keltner_rsi.py`
+  - [x] 3.7.1 Entry: Price < Lower KC, RSI < 30
+  - [x] 3.7.2 Exit: Price > Middle KC **OR** RSI > 50
+  - [x] 3.7.3 Stop: 2%
+- [x] **3.8** Create `strategies/bb_rsi.py`
+  - [x] 3.8.1 Entry: Price < Lower BB, RSI < 30
+  - [x] 3.8.2 Exit: Price > Middle BB **OR** RSI > 50
+  - [x] 3.8.3 Stop: 2%
+  - [x] 3.8.4 **Fix:** Simple percentage stop, no complex calculation
 - [ ] **3.9** Unit tests for each strategy
 
 **Acceptance:** All strategies produce signals, no state contamination
@@ -166,16 +166,16 @@ KELLY_FRACTION = 0.5            # Half-Kelly sizing
   - [ ] 4.1.2 **Fix:** Gap handling - exit at bar.open if gap through stop/TP
   - [ ] 4.1.3 **Fix:** Same-bar SL/TP - check which hit first based on bar.open
   - [ ] 4.1.4 Track equity at every bar (including unrealized)
-- [ ] **4.2** Create `backtest/data_loader.py`
-  - [ ] 4.2.1 Load from `alpaca_historical.db` (116M bars)
-  - [ ] 4.2.2 Filter by symbol, date range
-  - [ ] 4.2.3 Load SPY for market regime filter
-- [ ] **4.3** Create `backtest/metrics.py`
-  - [ ] 4.3.1 Win rate
-  - [ ] 4.3.2 Profit factor
-  - [ ] 4.3.3 Sharpe ratio (annualized)
-  - [ ] 4.3.4 Max drawdown (bar-by-bar)
-  - [ ] 4.3.5 Average win/loss
+- [x] **4.2** Create `backtest/data_loader.py`
+  - [x] 4.2.1 Load from `alpaca_historical.db` (116M bars)
+  - [x] 4.2.2 Filter by symbol, date range
+  - [x] 4.2.3 Load SPY for market regime filter
+- [x] **4.3** Create `backtest/metrics.py`
+  - [x] 4.3.1 Win rate
+  - [x] 4.3.2 Profit factor
+  - [x] 4.3.3 Sharpe ratio (annualized)
+  - [x] 4.3.4 Max drawdown (bar-by-bar)
+  - [x] 4.3.5 Average win/loss
 - [ ] **4.4** Run backtest on all 5 strategies
 - [ ] **4.5** Compare results to previous (inflated) numbers
 
@@ -280,11 +280,11 @@ C:\Users\User\Documents\AI\trading_bot\
 ├── strategies/
 │   ├── [x] __init__.py
 │   ├── [x] base.py
-│   ├── [ ] connors_rsi.py
-│   ├── [ ] cumulative_rsi.py
-│   ├── [ ] vwap_rsi.py
-│   ├── [ ] keltner_rsi.py
-│   └── [ ] bb_rsi.py
+│   ├── [x] connors_rsi.py
+│   ├── [x] cumulative_rsi.py
+│   ├── [x] vwap_rsi.py
+│   ├── [x] keltner_rsi.py
+│   └── [x] bb_rsi.py
 ├── execution/
 │   ├── [x] __init__.py
 │   ├── [x] alpaca.py
@@ -292,8 +292,8 @@ C:\Users\User\Documents\AI\trading_bot\
 ├── backtest/
 │   ├── [x] __init__.py
 │   ├── [ ] engine.py
-│   ├── [ ] data_loader.py
-│   └── [ ] metrics.py
+│   ├── [x] data_loader.py
+│   └── [x] metrics.py
 ├── tests/
 │   ├── [x] __init__.py
 │   ├── [ ] test_indicators.py
