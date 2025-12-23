@@ -687,12 +687,13 @@ class ConnorsBot:
             rsi = entry_signal['rsi']
 
             self.logger.info(
-                f"Executing ENTRY: {symbol} x {shares} @ ${entry_price:.2f} "
-                f"with stop @ ${stop_loss:.2f} (RSI={rsi:.2f})"
+                f"Executing ENTRY: {symbol} x {shares} @ ~${entry_price:.2f} "
+                f"with {STOP_LOSS_PCT*100:.1f}% stop (RSI={rsi:.2f})"
             )
 
-            # Execute bracket order with stop loss protection
-            result = self.alpaca.submit_bracket_order(symbol, shares, stop_loss)
+            # Execute bracket order - pass stop loss PERCENTAGE, not price
+            # Stop price will be calculated from ACTUAL fill price inside bracket order
+            result = self.alpaca.submit_bracket_order(symbol, shares, STOP_LOSS_PCT)
 
             if result:
                 entries_executed += 1
@@ -701,20 +702,21 @@ class ConnorsBot:
                 order_id = result.get('order_id')
                 stop_order_id = result.get('stop_order_id')
 
-                # Use fill price if available, otherwise use expected entry price
+                # Use ACTUAL fill price and stop price from bracket order result
                 fill_price = result.get('fill_price', entry_price)
+                actual_stop_loss = result.get('stop_price', fill_price * (1 - STOP_LOSS_PCT))
 
-                # Add to position tracking
+                # Add to position tracking with ACTUAL values
                 self.positions[symbol] = {
                     'entry_price': fill_price,
-                    'stop_loss': stop_loss,
+                    'stop_loss': actual_stop_loss,
                     'shares': shares,
                     'stop_order_id': stop_order_id
                 }
 
                 self.logger.info(
-                    f"ENTRY SUCCESS: {symbol} - {shares} shares @ ${fill_price:.2f} "
-                    f"(order_id={order_id}, stop_order_id={stop_order_id})"
+                    f"ENTRY SUCCESS: {symbol} - {shares} shares @ ${fill_price:.2f}, "
+                    f"stop @ ${actual_stop_loss:.2f} (order_id={order_id}, stop_order_id={stop_order_id})"
                 )
 
                 # Log fill details if fill price differs from expected

@@ -303,19 +303,19 @@ class AlpacaClient:
             logger.error(f"Unexpected error closing position for {symbol}: {e}")
             return False
 
-    def submit_bracket_order(self, symbol: str, qty: int, stop_price: float) -> Optional[Dict]:
+    def submit_bracket_order(self, symbol: str, qty: int, stop_loss_pct: float) -> Optional[Dict]:
         """
         Submit a bracket order that includes buy + stop loss.
 
         This submits two separate orders:
         1. A market buy order
         2. Wait for the buy order to fill (up to 60 seconds)
-        3. A stop loss sell order based on actual fill price
+        3. A stop loss sell order calculated from ACTUAL fill price
 
         Args:
             symbol: Stock symbol to buy.
             qty: Number of shares to buy.
-            stop_price: Stop loss price for the protective stop.
+            stop_loss_pct: Stop loss percentage (e.g., 0.03 for 3% stop).
 
         Returns:
             Dictionary with bracket order details if successful:
@@ -324,7 +324,7 @@ class AlpacaClient:
                 - fill_price: Actual fill price from buy order (float)
                 - symbol: Stock symbol (str)
                 - qty: Number of shares actually filled (int)
-                - stop_price: Stop loss price (float)
+                - stop_price: Stop loss price calculated from actual fill (float)
             Returns None if either order fails.
         """
         try:
@@ -387,9 +387,13 @@ class AlpacaClient:
             actual_fill_price = float(filled_order.filled_avg_price)
             actual_qty = int(filled_order.filled_qty)
 
+            # Calculate stop price from ACTUAL fill price (not expected price)
+            stop_price = round(actual_fill_price * (1 - stop_loss_pct), 2)
+
             logger.info(
                 f"Bracket order - Using actual fill price ${actual_fill_price:.2f} "
-                f"and quantity {actual_qty} for stop order"
+                f"and quantity {actual_qty} for stop order @ ${stop_price:.2f} "
+                f"({stop_loss_pct*100:.1f}% stop)"
             )
 
             # Now submit the stop loss sell order with GTC and actual quantity
