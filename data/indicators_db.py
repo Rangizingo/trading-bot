@@ -134,6 +134,23 @@ class IndicatorsDB:
             logger.error(f"Database availability check failed: {e}")
             return False
 
+    def get_last_updated(self) -> int:
+        """
+        Get the latest updated_at timestamp from the indicators table.
+
+        Returns:
+            Unix timestamp of last update, or 0 if unavailable.
+        """
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute("SELECT MAX(updated_at) FROM indicators")
+                result = cursor.fetchone()[0]
+                return result if result else 0
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to get last updated timestamp: {e}")
+            return 0
+
     def get_entry_candidates(
         self,
         max_rsi: float = 5,
@@ -142,10 +159,14 @@ class IndicatorsDB:
         limit: int = 20
     ) -> List[Dict]:
         """
-        Find stocks matching entry criteria for Connors RSI strategy.
+        Find stocks matching entry criteria for true Connors RSI(2) strategy.
 
-        Screens for oversold stocks trading above their 200-day SMA with
-        sufficient liquidity, ordered by most oversold (lowest RSI) first.
+        Entry conditions (all must be true):
+        - RSI(2) <= max_rsi (oversold)
+        - Close > SMA200 (in long-term uptrend)
+        - Close < SMA5 (pulled back below short-term average)
+
+        Screens with sufficient liquidity, ordered by most oversold first.
 
         Args:
             max_rsi: Maximum RSI value (default 5 for extreme oversold)
@@ -180,8 +201,10 @@ class IndicatorsDB:
                 AND close IS NOT NULL
                 AND volume IS NOT NULL
                 AND atr IS NOT NULL
+                AND rsi > 0
                 AND rsi <= ?
                 AND close > sma200
+                AND close < sma5
                 AND volume >= ?
                 AND close >= ?
             ORDER BY rsi ASC

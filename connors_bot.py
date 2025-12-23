@@ -27,7 +27,6 @@ from config import (
     MAX_POSITIONS,
     STOP_LOSS_PCT,
     ENTRY_RSI,
-    EXIT_RSI,
     MIN_VOLUME,
     MIN_PRICE,
     MARKET_OPEN,
@@ -109,9 +108,9 @@ class ConnorsBot:
         Returns:
             Configured logger instance.
         """
-        # Create logger
+        # Create logger (DEBUG to capture all, handlers filter by level)
         logger = logging.getLogger("ConnorsBot")
-        logger.setLevel(logging.INFO)
+        logger.setLevel(logging.DEBUG)
 
         # Clear any existing handlers
         logger.handlers.clear()
@@ -126,9 +125,9 @@ class ConnorsBot:
         console_handler.setFormatter(console_formatter)
         logger.addHandler(console_handler)
 
-        # File handler - DEBUG level
+        # File handler - DEBUG level (overwrites on each run)
         log_file = LOG_DIR / "trading.log"
-        file_handler = logging.FileHandler(log_file)
+        file_handler = logging.FileHandler(log_file, mode='w')  # 'w' = overwrite
         file_handler.setLevel(logging.DEBUG)
         file_formatter = logging.Formatter(
             '%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
@@ -290,18 +289,16 @@ class ConnorsBot:
         """
         Validate existing positions against exit conditions on startup.
 
-        Checks all positions for four exit conditions:
-        1. Stop hit: close <= stop_loss
-        2. Trend broken: close < sma200
-        3. RSI exit: rsi > EXIT_RSI
-        4. SMA5 exit: close > sma5
+        True Connors RSI exit conditions:
+        1. Stop hit: close <= stop_loss (risk management)
+        2. SMA5 exit: close > sma5 (mean reversion complete)
 
         Returns:
             List of invalid position dicts containing:
                 - symbol: Stock symbol
                 - shares: Number of shares
                 - current_price: Current market price
-                - reason: Exit reason (stop_hit/trend_broken/rsi_exit/sma5_exit)
+                - reason: Exit reason (stop_hit/sma5_exit)
                 - pnl: Profit/loss amount
         """
         if not self.positions:
@@ -328,8 +325,6 @@ class ConnorsBot:
 
             data = position_data[symbol]
             current_price = data['close']
-            rsi = data['rsi']
-            sma200 = data['sma200']
             sma5 = data['sma5']
 
             entry_price = pos_info['entry_price']
@@ -339,35 +334,21 @@ class ConnorsBot:
             # Calculate P&L
             pnl = (current_price - entry_price) * shares
 
-            # Check exit conditions
+            # Check exit conditions (true Connors: stop + SMA5 only)
             exit_reason = None
 
-            # 1. Stop loss hit (highest priority)
+            # 1. Stop loss hit (highest priority - risk management)
             if current_price <= stop_loss:
                 exit_reason = "stop_hit"
                 self.logger.info(
-                    f"{symbol}: INVALID - Stop hit (Price=${current_price:.2f} <= Stop=${stop_loss:.2f})"
+                    f"{symbol}: EXIT - Stop hit (Price=${current_price:.2f} <= Stop=${stop_loss:.2f})"
                 )
 
-            # 2. Trend broken - price below SMA200
-            elif current_price < sma200:
-                exit_reason = "trend_broken"
-                self.logger.info(
-                    f"{symbol}: INVALID - Trend broken (Price=${current_price:.2f} < SMA200=${sma200:.2f})"
-                )
-
-            # 3. RSI exit - overbought
-            elif rsi > EXIT_RSI:
-                exit_reason = "rsi_exit"
-                self.logger.info(
-                    f"{symbol}: INVALID - RSI exit (RSI={rsi:.2f} > {EXIT_RSI})"
-                )
-
-            # 4. SMA5 exit - price above SMA5
+            # 2. SMA5 exit - mean reversion complete
             elif current_price > sma5:
                 exit_reason = "sma5_exit"
                 self.logger.info(
-                    f"{symbol}: INVALID - SMA5 exit (Price=${current_price:.2f} > SMA5=${sma5:.2f})"
+                    f"{symbol}: EXIT - SMA5 (Price=${current_price:.2f} > SMA5=${sma5:.2f})"
                 )
 
             # Build invalid position signal if any condition met
@@ -383,13 +364,13 @@ class ConnorsBot:
 
                 self.logger.debug(
                     f"{symbol} validation details: Entry=${entry_price:.2f}, Current=${current_price:.2f}, "
-                    f"Stop=${stop_loss:.2f}, RSI={rsi:.2f}, SMA200=${sma200:.2f}, SMA5=${sma5:.2f}, P&L=${pnl:+.2f}"
+                    f"Stop=${stop_loss:.2f}, SMA5=${sma5:.2f}, P&L=${pnl:+.2f}"
                 )
             else:
                 valid_count += 1
                 self.logger.info(
                     f"{symbol}: VALID - {shares} shares @ ${current_price:.2f} "
-                    f"(Entry=${entry_price:.2f}, RSI={rsi:.2f}, P&L=${pnl:+.2f})"
+                    f"(Entry=${entry_price:.2f}, P&L=${pnl:+.2f})"
                 )
 
         # Log summary
@@ -509,10 +490,9 @@ class ConnorsBot:
         """
         Check exit conditions for all open positions.
 
-        Evaluates three exit criteria in priority order:
+        True Connors RSI exit criteria:
         1. close <= stop_loss (risk exit - stop loss hit) - HIGHEST PRIORITY
-        2. RSI > EXIT_RSI (signal exit - take profit on overbought)
-        3. close > sma5 (trend exit - momentum reversal)
+        2. close > sma5 (mean reversion complete - price above short-term average)
 
         When exiting, cancels any existing stop orders before closing the position.
 
@@ -521,7 +501,7 @@ class ConnorsBot:
                 - symbol: Stock symbol
                 - shares: Number of shares to sell
                 - current_price: Current market price
-                - reason: Exit reason (risk/signal/trend)
+                - reason: Exit reason (risk/trend)
                 - pnl: Profit/loss amount
         """
         if not self.positions:
@@ -544,7 +524,6 @@ class ConnorsBot:
 
             data = position_data[symbol]
             current_price = data['close']
-            rsi = data['rsi']
             sma5 = data['sma5']
 
             entry_price = pos_info['entry_price']
@@ -554,7 +533,7 @@ class ConnorsBot:
             # Calculate P&L
             pnl = (current_price - entry_price) * shares
 
-            # Check exit conditions in priority order
+            # Check exit conditions in priority order (true Connors: stop + SMA5 only)
             exit_reason = None
 
             # 1. Stop loss hit (HIGHEST PRIORITY - capital protection)
@@ -564,14 +543,7 @@ class ConnorsBot:
                     f"Exit signal (stop): {symbol} - Price=${current_price:.2f} <= Stop=${stop_loss:.2f}"
                 )
 
-            # 2. RSI exit - overbought
-            elif rsi > EXIT_RSI:
-                exit_reason = "signal"
-                self.logger.info(
-                    f"Exit signal (RSI): {symbol} - RSI={rsi:.2f} > {EXIT_RSI}"
-                )
-
-            # 3. Trend exit - price above SMA5
+            # 2. SMA5 exit - price above short-term average (mean reversion complete)
             elif current_price > sma5:
                 exit_reason = "trend"
                 self.logger.info(
@@ -769,7 +741,7 @@ class ConnorsBot:
         self.logger.info("CONNORS RSI TRADING BOT")
         self.logger.info("=" * 70)
         self.logger.info(f"Started: {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S %Z')}")
-        self.logger.info(f"Strategy: Connors RSI Entry <= {ENTRY_RSI}, Exit >= {EXIT_RSI}")
+        self.logger.info(f"Strategy: Entry RSI <= {ENTRY_RSI}, Exit Close > SMA5")
         self.logger.info(f"Position Size: {POSITION_SIZE_PCT*100:.0f}% per position")
         self.logger.info(f"Max Positions: {MAX_POSITIONS}")
         self.logger.info(f"Stop Loss: {STOP_LOSS_PCT*100:.0f}%")
@@ -843,6 +815,13 @@ class ConnorsBot:
             self.logger.info(f"Auto-exit complete: {len(invalid_positions)} positions closed")
             self.logger.info("=" * 70)
 
+            # Wait for Alpaca to process the close orders before continuing
+            self.logger.info("Waiting 5 seconds for orders to settle...")
+            time.sleep(5)
+
+            # Re-sync positions to get accurate state after auto-exits
+            self.sync_positions()
+
         # Wait for market to open
         while not self.is_market_hours():
             now = datetime.now(ET)
@@ -853,29 +832,41 @@ class ConnorsBot:
             time.sleep(60)  # Check every minute
 
         self.logger.info("Market is OPEN. Starting trading cycles...")
+        self.logger.info("Bot will run when database is updated by VV7 sync...")
         self.running = True
 
+        # Track last DB update timestamp
+        last_db_update = self.db.get_last_updated()
+        self.logger.info(f"Current DB timestamp: {last_db_update}")
+
         try:
-            # Main trading loop
+            # Main trading loop - triggered by DB updates
             while self.running:
                 # Check if still in market hours
                 if not self.is_market_hours():
                     self.logger.info("Market has closed. Stopping trading cycles.")
                     break
 
-                # Run trading cycle
-                try:
-                    self.run_cycle()
-                except Exception as e:
-                    self.logger.error(f"Error in trading cycle: {e}", exc_info=True)
+                # Wait for database to be updated by VV7 sync
+                current_db_update = self.db.get_last_updated()
 
-                # Sleep until next cycle
-                sleep_seconds = CYCLE_INTERVAL_MINUTES * 60
-                next_cycle = datetime.now(ET).strftime('%H:%M:%S')
-                self.logger.info(
-                    f"Sleeping for {CYCLE_INTERVAL_MINUTES} minutes until next cycle..."
-                )
-                time.sleep(sleep_seconds)
+                if current_db_update > last_db_update:
+                    # DB was updated - wait a moment for sync to fully complete
+                    self.logger.info(f"DB updated: {last_db_update} -> {current_db_update}")
+                    self.logger.info("Waiting 3 seconds for sync to settle...")
+                    time.sleep(3)
+                    last_db_update = current_db_update
+
+                    try:
+                        self.run_cycle()
+                    except Exception as e:
+                        self.logger.error(f"Error in trading cycle: {e}", exc_info=True)
+                else:
+                    # No update yet - wait and check again
+                    pass
+
+                # Check every 10 seconds for DB updates
+                time.sleep(10)
 
         except KeyboardInterrupt:
             self.logger.info("")

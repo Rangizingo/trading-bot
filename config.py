@@ -51,11 +51,11 @@ MAX_POSITIONS = 5
 STOP_LOSS_PCT = 0.03  # 3% stop loss
 
 # Connors RSI strategy parameters
-ENTRY_RSI = 5   # Enter when RSI drops to this level
-EXIT_RSI = 60   # Exit when RSI rises to this level
+ENTRY_RSI = 5   # Enter when RSI drops below this level
+# EXIT: Close > SMA5 (true Connors exit - no RSI exit threshold)
 
 # Stock filtering criteria
-MIN_VOLUME = 100000  # Minimum daily volume
+MIN_VOLUME = 0       # Disabled - intraday.db has per-bar volume, not daily
 MIN_PRICE = 5.00     # Minimum stock price
 
 # =============================================================================
@@ -109,12 +109,6 @@ def validate_config() -> None:
 
     if ENTRY_RSI <= 0 or ENTRY_RSI >= 100:
         raise ValueError(f"ENTRY_RSI must be between 0 and 100, got {ENTRY_RSI}")
-
-    if EXIT_RSI <= 0 or EXIT_RSI >= 100:
-        raise ValueError(f"EXIT_RSI must be between 0 and 100, got {EXIT_RSI}")
-
-    if EXIT_RSI <= ENTRY_RSI:
-        raise ValueError(f"EXIT_RSI ({EXIT_RSI}) must be greater than ENTRY_RSI ({ENTRY_RSI})")
 
 
 # Validate on import
