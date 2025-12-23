@@ -1,0 +1,494 @@
+"""
+Alpaca API client for executing trades and managing positions.
+
+Uses the alpaca-py library to interact with Alpaca's trading API.
+Supports both paper and live trading environments.
+"""
+
+import logging
+from typing import Dict, List, Optional
+
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, QueryOrderStatus
+from alpaca.common.exceptions import APIError
+
+from config import ALPACA_API_KEY, ALPACA_SECRET_KEY
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+
+class AlpacaClient:
+    """
+    Client for interacting with Alpaca's trading API.
+
+    Provides methods for account management, position tracking, and order execution.
+    All API errors are caught and logged, with graceful fallbacks.
+    """
+
+    def __init__(self, paper: bool = True) -> None:
+        """
+        Initialize Alpaca trading client.
+
+        Args:
+            paper: If True, use paper trading environment. If False, use live trading.
+
+        Raises:
+            ValueError: If API credentials are missing or invalid.
+        """
+        if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+            raise ValueError(
+                "Alpaca API credentials are not configured. "
+                "Set ALPACA_API_KEY and ALPACA_SECRET_KEY in environment variables."
+            )
+
+        try:
+            self.client = TradingClient(
+                api_key=ALPACA_API_KEY,
+                secret_key=ALPACA_SECRET_KEY,
+                paper=paper
+            )
+            self.paper = paper
+            logger.info(f"Alpaca client initialized (paper={paper})")
+        except Exception as e:
+            logger.error(f"Failed to initialize Alpaca client: {e}")
+            raise
+
+    def get_account(self) -> Dict:
+        """
+        Get current account information.
+
+        Returns:
+            Dictionary with account details:
+                - equity: Total account value (float)
+                - cash: Available cash (float)
+                - buying_power: Buying power (float)
+
+        Raises:
+            APIError: If API request fails.
+        """
+        try:
+            account = self.client.get_account()
+
+            result = {
+                "equity": float(account.equity),
+                "cash": float(account.cash),
+                "buying_power": float(account.buying_power)
+            }
+
+            logger.info(
+                f"Account info: equity=${result['equity']:.2f}, "
+                f"cash=${result['cash']:.2f}, "
+                f"buying_power=${result['buying_power']:.2f}"
+            )
+
+            return result
+
+        except APIError as e:
+            logger.error(f"Failed to get account info: {e}")
+            raise
+
+    def get_positions(self) -> List[Dict]:
+        """
+        Get all open positions.
+
+        Returns:
+            List of dictionaries, each containing:
+                - symbol: Stock symbol (str)
+                - qty: Number of shares (float)
+                - market_value: Current market value (float)
+                - current_price: Current price per share (float)
+                - avg_entry_price: Average entry price (float)
+                - unrealized_pl: Unrealized profit/loss (float)
+        """
+        try:
+            positions = self.client.get_all_positions()
+
+            result = []
+            for pos in positions:
+                result.append({
+                    "symbol": pos.symbol,
+                    "qty": float(pos.qty),
+                    "market_value": float(pos.market_value),
+                    "current_price": float(pos.current_price),
+                    "avg_entry_price": float(pos.avg_entry_price),
+                    "unrealized_pl": float(pos.unrealized_pl)
+                })
+
+            logger.info(f"Retrieved {len(result)} open positions")
+            return result
+
+        except APIError as e:
+            logger.error(f"Failed to get positions: {e}")
+            return []
+
+    def get_position(self, symbol: str) -> Optional[Dict]:
+        """
+        Get position for a specific symbol.
+
+        Args:
+            symbol: Stock symbol to query.
+
+        Returns:
+            Dictionary with position details, or None if no position exists.
+            Dictionary contains same fields as get_positions().
+        """
+        try:
+            pos = self.client.get_open_position(symbol)
+
+            result = {
+                "symbol": pos.symbol,
+                "qty": float(pos.qty),
+                "market_value": float(pos.market_value),
+                "current_price": float(pos.current_price),
+                "avg_entry_price": float(pos.avg_entry_price),
+                "unrealized_pl": float(pos.unrealized_pl)
+            }
+
+            logger.info(f"Position for {symbol}: {result['qty']} shares @ ${result['current_price']:.2f}")
+            return result
+
+        except APIError as e:
+            # Position not found is expected, don't log as error
+            if "position does not exist" in str(e).lower():
+                logger.debug(f"No position found for {symbol}")
+                return None
+            else:
+                logger.error(f"Failed to get position for {symbol}: {e}")
+                return None
+
+    def is_market_open(self) -> bool:
+        """
+        Check if the market is currently open.
+
+        Returns:
+            True if market is open, False otherwise.
+        """
+        try:
+            clock = self.client.get_clock()
+            is_open = clock.is_open
+
+            logger.debug(f"Market is {'open' if is_open else 'closed'}")
+            return is_open
+
+        except APIError as e:
+            logger.error(f"Failed to get market clock: {e}")
+            return False
+
+    def submit_buy(self, symbol: str, qty: int) -> Optional[Dict]:
+        """
+        Submit a market buy order.
+
+        Args:
+            symbol: Stock symbol to buy.
+            qty: Number of shares to buy.
+
+        Returns:
+            Dictionary with order details if successful:
+                - id: Order ID (str)
+                - symbol: Stock symbol (str)
+                - qty: Number of shares (int)
+                - side: Order side ("buy")
+                - status: Order status (str)
+            Returns None if order fails.
+        """
+        try:
+            # Create market order request
+            order_data = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY
+            )
+
+            # Submit order
+            order = self.client.submit_order(order_data)
+
+            result = {
+                "id": order.id,
+                "symbol": order.symbol,
+                "qty": int(order.qty),
+                "side": order.side.value,
+                "status": order.status.value
+            }
+
+            logger.info(f"Buy order submitted: {symbol} x {qty}, order_id={order.id}, status={order.status}")
+            return result
+
+        except APIError as e:
+            logger.error(f"Failed to submit buy order for {symbol} x {qty}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error submitting buy order for {symbol}: {e}")
+            return None
+
+    def submit_sell(self, symbol: str, qty: int) -> Optional[Dict]:
+        """
+        Submit a market sell order.
+
+        Args:
+            symbol: Stock symbol to sell.
+            qty: Number of shares to sell.
+
+        Returns:
+            Dictionary with order details if successful:
+                - id: Order ID (str)
+                - symbol: Stock symbol (str)
+                - qty: Number of shares (int)
+                - side: Order side ("sell")
+                - status: Order status (str)
+            Returns None if order fails.
+        """
+        try:
+            # Create market order request
+            order_data = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.DAY
+            )
+
+            # Submit order
+            order = self.client.submit_order(order_data)
+
+            result = {
+                "id": order.id,
+                "symbol": order.symbol,
+                "qty": int(order.qty),
+                "side": order.side.value,
+                "status": order.status.value
+            }
+
+            logger.info(f"Sell order submitted: {symbol} x {qty}, order_id={order.id}, status={order.status}")
+            return result
+
+        except APIError as e:
+            logger.error(f"Failed to submit sell order for {symbol} x {qty}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error submitting sell order for {symbol}: {e}")
+            return None
+
+    def close_position(self, symbol: str) -> bool:
+        """
+        Close entire position for a symbol.
+
+        Submits a market order to liquidate the entire position.
+
+        Args:
+            symbol: Stock symbol to close.
+
+        Returns:
+            True if position was successfully closed, False otherwise.
+        """
+        try:
+            # Use Alpaca's close_position endpoint
+            self.client.close_position(symbol)
+
+            logger.info(f"Position closed successfully: {symbol}")
+            return True
+
+        except APIError as e:
+            logger.error(f"Failed to close position for {symbol}: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error closing position for {symbol}: {e}")
+            return False
+
+    def submit_bracket_order(self, symbol: str, qty: int, stop_price: float) -> Optional[Dict]:
+        """
+        Submit a bracket order that includes buy + stop loss.
+
+        This submits two separate orders:
+        1. A market buy order
+        2. A stop loss sell order
+
+        Args:
+            symbol: Stock symbol to buy.
+            qty: Number of shares to buy.
+            stop_price: Stop loss price for the protective stop.
+
+        Returns:
+            Dictionary with bracket order details if successful:
+                - order_id: Primary buy order ID (str)
+                - stop_order_id: Stop loss order ID (str)
+                - symbol: Stock symbol (str)
+                - qty: Number of shares (int)
+                - stop_price: Stop loss price (float)
+            Returns None if either order fails.
+        """
+        try:
+            # First, submit the market buy order
+            buy_order_data = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.DAY
+            )
+            buy_order = self.client.submit_order(buy_order_data)
+
+            logger.info(
+                f"Bracket order - Buy order submitted: {symbol} x {qty}, "
+                f"order_id={buy_order.id}, status={buy_order.status}"
+            )
+
+            # Then, submit the stop loss sell order
+            stop_order_data = StopOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                time_in_force=TimeInForce.GTC,  # Good-til-cancelled for stop loss
+                stop_price=stop_price
+            )
+            stop_order = self.client.submit_order(stop_order_data)
+
+            logger.info(
+                f"Bracket order - Stop loss submitted: {symbol} x {qty} @ ${stop_price:.2f}, "
+                f"stop_order_id={stop_order.id}, status={stop_order.status}"
+            )
+
+            result = {
+                "order_id": buy_order.id,
+                "stop_order_id": stop_order.id,
+                "symbol": symbol,
+                "qty": qty,
+                "stop_price": stop_price
+            }
+
+            logger.info(f"Bracket order completed: {result}")
+            return result
+
+        except APIError as e:
+            logger.error(f"Failed to submit bracket order for {symbol} x {qty}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error submitting bracket order for {symbol}: {e}")
+            return None
+
+    def cancel_order(self, order_id: str) -> bool:
+        """
+        Cancel an order by ID.
+
+        Args:
+            order_id: The order ID to cancel.
+
+        Returns:
+            True if order was successfully cancelled, False otherwise.
+            Returns True even if order was already filled or not found (graceful handling).
+        """
+        try:
+            self.client.cancel_order_by_id(order_id)
+            logger.info(f"Order cancelled successfully: {order_id}")
+            return True
+
+        except APIError as e:
+            error_msg = str(e).lower()
+            # Gracefully handle expected cases
+            if "order not found" in error_msg or "order is not cancelable" in error_msg:
+                logger.debug(f"Order {order_id} not found or already filled: {e}")
+                return True  # Consider this success - order is not active
+            else:
+                logger.error(f"Failed to cancel order {order_id}: {e}")
+                return False
+        except Exception as e:
+            logger.error(f"Unexpected error cancelling order {order_id}: {e}")
+            return False
+
+    def get_open_orders(self, symbol: str = None) -> List[Dict]:
+        """
+        Get all open/pending orders.
+
+        Args:
+            symbol: Optional stock symbol to filter by. If None, returns all open orders.
+
+        Returns:
+            List of dictionaries, each containing:
+                - id: Order ID (str)
+                - symbol: Stock symbol (str)
+                - qty: Number of shares (int)
+                - side: Order side ("buy" or "sell")
+                - type: Order type (str)
+                - stop_price: Stop price if stop order, None otherwise (Optional[float])
+            Returns empty list on error.
+        """
+        try:
+            # Get all open orders
+            filter_params = {
+                "status": QueryOrderStatus.OPEN
+            }
+            if symbol:
+                filter_params["symbols"] = [symbol]
+
+            orders = self.client.get_orders(filter=filter_params)
+
+            result = []
+            for order in orders:
+                order_dict = {
+                    "id": order.id,
+                    "symbol": order.symbol,
+                    "qty": int(order.qty),
+                    "side": order.side.value,
+                    "type": order.type.value,
+                    "stop_price": float(order.stop_price) if order.stop_price else None
+                }
+                result.append(order_dict)
+
+            logger.info(
+                f"Retrieved {len(result)} open orders"
+                + (f" for {symbol}" if symbol else "")
+            )
+            return result
+
+        except APIError as e:
+            logger.error(f"Failed to get open orders: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error getting open orders: {e}")
+            return []
+
+    def get_order(self, order_id: str) -> Optional[Dict]:
+        """
+        Get a specific order by ID.
+
+        Args:
+            order_id: The order ID to retrieve.
+
+        Returns:
+            Dictionary with order details:
+                - id: Order ID (str)
+                - symbol: Stock symbol (str)
+                - qty: Number of shares (int)
+                - side: Order side ("buy" or "sell")
+                - type: Order type (str)
+                - status: Order status (str)
+                - stop_price: Stop price if stop order, None otherwise (Optional[float])
+            Returns None if order not found.
+        """
+        try:
+            order = self.client.get_order_by_id(order_id)
+
+            result = {
+                "id": order.id,
+                "symbol": order.symbol,
+                "qty": int(order.qty),
+                "side": order.side.value,
+                "type": order.type.value,
+                "status": order.status.value,
+                "stop_price": float(order.stop_price) if order.stop_price else None
+            }
+
+            logger.debug(f"Order {order_id}: {result}")
+            return result
+
+        except APIError as e:
+            error_msg = str(e).lower()
+            if "order not found" in error_msg:
+                logger.debug(f"Order not found: {order_id}")
+                return None
+            else:
+                logger.error(f"Failed to get order {order_id}: {e}")
+                return None
+        except Exception as e:
+            logger.error(f"Unexpected error getting order {order_id}: {e}")
+            return None

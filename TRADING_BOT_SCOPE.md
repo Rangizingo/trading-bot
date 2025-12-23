@@ -1,6 +1,6 @@
 # Connors RSI Paper Trading Bot - Project Scope
 
-## STATUS: READY TO BUILD
+## STATUS: PHASE 4-5 IN PROGRESS (Robustness Improvements)
 
 ---
 
@@ -14,6 +14,7 @@ A streamlined paper trading bot that reads pre-calculated technical indicators f
 2. **Read and Trade** - Query database for signals, execute via Alpaca
 3. **Pre-calculated Data** - VV7 already computed all 47 indicators
 4. **Single Strategy** - Connors RSI(2) only
+5. **Robust** - Handles restarts, gaps, and uses real-time stop protection
 
 ### Data Source
 - **Database:** `%LOCALAPPDATA%/VV7SimpleBridge/intraday.db`
@@ -31,24 +32,37 @@ A streamlined paper trading bot that reads pre-calculated technical indicators f
 │         - Market hours check                                │
 │         - 5-minute trading cycles                           │
 │         - Entry/exit logic                                  │
-│         - Position tracking                                 │
+│         - Position validation on restart                    │
+│         - Real-time stop protection via Alpaca              │
 └─────────────────────────────────────────────────────────────┘
                               │
           ┌───────────────────┴───────────────────┐
           ▼                                       ▼
-┌─────────────────────┐                 ┌─────────────────────┐
-│  indicators_db.py   │                 │  alpaca_client.py   │
-│    (Data Layer)     │                 │ (Execution Layer)   │
-│  - Read indicators  │                 │  - Submit orders    │
-│  - Find candidates  │                 │  - Get positions    │
-│  - Check exits      │                 │  - Account info     │
-└─────────────────────┘                 └─────────────────────┘
-          │                                       │
-          ▼                                       ▼
-┌─────────────────────┐                 ┌─────────────────────┐
-│    intraday.db      │                 │   Alpaca Paper      │
-│  (VV7 SQLite)       │                 │     Account         │
-└─────────────────────┘                 └─────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                    indicators_db.py                         │
+│                      (Data Layer)                           │
+│  - Read indicators    - Find entry candidates               │
+│  - Check exits        - Validate positions                  │
+└─────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────┐
+│    intraday.db (VV7 SQLite - 9,847 symbols, 47 indicators)  │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                    alpaca_client.py                         │
+│                   (Execution Layer)                         │
+│  - Bracket orders (buy + stop loss)                         │
+│  - Real-time stop monitoring by Alpaca                      │
+│  - Cancel orders    - Close positions                       │
+└─────────────────────────────────────────────────────────────┘
+          │
+          ▼
+┌─────────────────────────────────────────────────────────────┐
+│              Alpaca Paper Trading Account                   │
+│         (Monitors stops 24/7, executes in real-time)        │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### File Structure
@@ -57,8 +71,10 @@ trading_bot/
 ├── config.py              # Configuration & constants
 ├── connors_bot.py         # Main bot orchestrator
 ├── data/
+│   ├── __init__.py
 │   └── indicators_db.py   # SQLite database reader
 ├── execution/
+│   ├── __init__.py
 │   └── alpaca_client.py   # Alpaca API wrapper
 ├── logs/
 │   └── trading.log        # Trade logs
@@ -74,8 +90,10 @@ trading_bot/
 | Aspect | Rule |
 |--------|------|
 | **Entry** | RSI(2) < 5 AND close > SMA(200) |
-| **Exit** | RSI(2) > 60 OR close > SMA(5) OR stop loss hit |
-| **Stop Loss** | 3% below entry price |
+| **Exit (Signal)** | RSI(2) > 60 |
+| **Exit (Trend)** | close > SMA(5) |
+| **Exit (Risk)** | Stop loss hit (3% below entry) |
+| **Stop Loss** | 3% below entry price (enforced by Alpaca real-time) |
 | **Position Size** | 10% of capital per trade |
 | **Max Positions** | 5 concurrent |
 
@@ -84,6 +102,26 @@ trading_bot/
 - Close > SMA(200) = long-term uptrend intact
 - Mean reversion: oversold stocks in uptrends tend to bounce
 - Historical win rate: 70-80% (Larry Connors research)
+
+---
+
+## Robustness Features
+
+### Position Validation (On Restart)
+When bot starts/restarts, it validates ALL existing positions:
+
+| Check | Condition | Action |
+|-------|-----------|--------|
+| **Trend Broken** | close < SMA200 | Exit immediately |
+| **Stop Hit** | close <= stop_loss | Exit immediately |
+| **RSI Exit** | RSI > 60 | Exit immediately |
+| **Valid** | All checks pass | Continue holding |
+
+### Real-Time Stop Protection
+- **Bracket Orders**: Entry submits buy + stop loss together
+- **Alpaca Monitors 24/7**: Not dependent on bot polling
+- **Instant Execution**: Stop triggers in real-time, even if bot is off
+- **Order Tracking**: Stop order IDs tracked for cancellation
 
 ---
 
@@ -100,7 +138,7 @@ trading_bot/
 | `close` | REAL | Current price |
 | `rsi` | REAL | **Entry/Exit signal** |
 | `sma5` | REAL | **Exit signal** |
-| `sma200` | REAL | **Trend filter** |
+| `sma200` | REAL | **Trend filter + validation** |
 | `atr` | REAL | Stop loss calculation |
 | `volume` | INTEGER | Liquidity filter |
 
@@ -139,130 +177,211 @@ trading_bot/
 
 ## Development Phases
 
-### Phase 1: Configuration & Data Layer
+### Phase 1: Configuration & Data Layer [COMPLETED]
 
 #### 1.1 Create config.py
-- [ ] Define `INTRADAY_DB_PATH` with proper Windows path expansion
-- [ ] Define trading parameters (capital, position size, max positions)
-- [ ] Define Connors RSI thresholds (entry_rsi=5, exit_rsi=60)
-- [ ] Define market hours (9:30 AM - 4:00 PM ET)
-- [ ] Load Alpaca credentials from environment variables
-
-**Acceptance:** Config imports without errors, paths resolve correctly
+- [x] Define `INTRADAY_DB_PATH` with proper Windows path expansion
+- [x] Define trading parameters (capital, position size, max positions)
+- [x] Define Connors RSI thresholds (entry_rsi=5, exit_rsi=60)
+- [x] Define market hours (9:30 AM - 4:00 PM ET)
+- [x] Load Alpaca credentials from environment variables
 
 #### 1.2 Create data/indicators_db.py - Class Setup
-- [ ] Create `IndicatorsDB` class
-- [ ] Implement `__init__` with path to intraday.db
-- [ ] Implement `_get_conn()` with busy timeout and row factory
-- [ ] Implement `is_available()` to check DB exists and has data
-
-**Acceptance:** Can connect to database, `is_available()` returns True
+- [x] Create `IndicatorsDB` class
+- [x] Implement `__init__` with path to intraday.db
+- [x] Implement `_get_conn()` with busy timeout and row factory
+- [x] Implement `is_available()` to check DB exists and has data
 
 #### 1.3 Add get_entry_candidates() Method
-- [ ] Query: `SELECT * FROM indicators WHERE rsi < 5 AND close > sma200`
-- [ ] Add filters: `volume >= 100000`, `close >= 5.00`
-- [ ] Order by RSI ascending (most oversold first)
-- [ ] Limit to 20 candidates
-- [ ] Return list of dicts with symbol, close, rsi, sma200, atr
-
-**Acceptance:** Returns list of oversold stocks when RSI < 5 exist
+- [x] Query: `SELECT * FROM indicators WHERE rsi < 5 AND close > sma200`
+- [x] Add filters: `volume >= 100000`, `close >= 5.00`
+- [x] Order by RSI ascending (most oversold first)
+- [x] Limit to 20 candidates
+- [x] Return list of dicts with symbol, close, rsi, sma200, atr
 
 #### 1.4 Add Helper Methods
-- [ ] `get_position_data(symbols)` - batch lookup for open positions
-- [ ] `get_indicator(symbol)` - single symbol lookup
-- [ ] `get_stats()` - record count, latest timestamp
-
-**Acceptance:** All methods return expected data types
+- [x] `get_position_data(symbols)` - batch lookup for open positions
+- [x] `get_indicator(symbol)` - single symbol lookup
+- [x] `get_stats()` - record count, latest timestamp
 
 ---
 
-### Phase 2: Execution Layer
+### Phase 2: Execution Layer [COMPLETED]
 
 #### 2.1 Create execution/alpaca_client.py - Class Setup
-- [ ] Create `AlpacaClient` class
-- [ ] Implement `__init__` loading credentials from environment
-- [ ] Initialize `TradingClient` from alpaca-py
-- [ ] Add paper trading flag
-
-**Acceptance:** Client initializes without errors
+- [x] Create `AlpacaClient` class
+- [x] Implement `__init__` loading credentials from environment
+- [x] Initialize `TradingClient` from alpaca-py
+- [x] Add paper trading flag
 
 #### 2.2 Add Account Methods
-- [ ] `get_account()` - returns equity, cash, buying_power
-- [ ] `get_positions()` - returns list of open positions
-- [ ] `get_position(symbol)` - single position lookup
-- [ ] `is_market_open()` - check market hours via Alpaca clock
-
-**Acceptance:** Account data retrieves correctly, positions list works
+- [x] `get_account()` - returns equity, cash, buying_power
+- [x] `get_positions()` - returns list of open positions
+- [x] `get_position(symbol)` - single position lookup
+- [x] `is_market_open()` - check market hours via Alpaca clock
 
 #### 2.3 Add Order Methods
-- [ ] `submit_buy(symbol, qty)` - market buy order
-- [ ] `submit_sell(symbol, qty)` - market sell order
-- [ ] `close_position(symbol)` - close entire position
-- [ ] Add error handling and logging for all orders
-
-**Acceptance:** Can submit paper orders, orders appear in Alpaca dashboard
+- [x] `submit_buy(symbol, qty)` - market buy order
+- [x] `submit_sell(symbol, qty)` - market sell order
+- [x] `close_position(symbol)` - close entire position
+- [x] Add error handling and logging for all orders
 
 ---
 
-### Phase 3: Bot Core
+### Phase 3: Bot Core [COMPLETED]
 
 #### 3.1 Create connors_bot.py - Class Setup
-- [ ] Create `ConnorsBot` class
-- [ ] Implement `__init__` initializing IndicatorsDB and AlpacaClient
-- [ ] Add `positions` dict to track open positions with entry prices
-- [ ] Implement `startup_checks()` - verify DB and Alpaca connectivity
-
-**Acceptance:** Bot initializes, startup checks pass
+- [x] Create `ConnorsBot` class
+- [x] Implement `__init__` initializing IndicatorsDB and AlpacaClient
+- [x] Add `positions` dict to track open positions with entry prices
+- [x] Implement `startup_checks()` - verify DB and Alpaca connectivity
 
 #### 3.2 Add Market Hours & Position Sync
-- [ ] `is_market_hours()` - check if within 9:30 AM - 4:00 PM ET
-- [ ] `sync_positions()` - load existing positions from Alpaca
-- [ ] Track entry_price and stop_loss for each position
-
-**Acceptance:** Market hours check works, positions sync from Alpaca
+- [x] `is_market_hours()` - check if within 9:30 AM - 4:00 PM ET
+- [x] `sync_positions()` - load existing positions from Alpaca
+- [x] Track entry_price and stop_loss for each position
 
 #### 3.3 Implement find_entries()
-- [ ] Call `db.get_entry_candidates()`
-- [ ] Filter out symbols we already own
-- [ ] Check available slots (max_positions - current_positions)
-- [ ] Calculate position size: `(capital * 0.10) / close`
-- [ ] Calculate stop_loss: `entry_price * 0.97`
-- [ ] Return list of entry signals
-
-**Acceptance:** Returns valid entry signals when candidates exist
+- [x] Call `db.get_entry_candidates()`
+- [x] Filter out symbols we already own
+- [x] Check available slots (max_positions - current_positions)
+- [x] Calculate position size: `(capital * 0.10) / close`
+- [x] Calculate stop_loss: `entry_price * 0.97`
+- [x] Return list of entry signals
 
 #### 3.4 Implement check_exits()
-- [ ] Get current indicator data for open positions
-- [ ] Check exit conditions for each:
+- [x] Get current indicator data for open positions
+- [x] Check exit conditions for each:
   - RSI > 60 (signal exit)
   - Close > SMA5 (trend exit)
   - Close < stop_loss (risk exit)
-- [ ] Return list of exit signals with reason
-
-**Acceptance:** Correctly identifies positions that should exit
+- [x] Return list of exit signals with reason
 
 #### 3.5 Implement run_cycle()
-- [ ] Sync positions from Alpaca
-- [ ] Call `check_exits()` and execute sells
-- [ ] Call `find_entries()` and execute buys
-- [ ] Log cycle summary (equity, positions, signals)
-
-**Acceptance:** Full cycle runs without errors, logs output
+- [x] Sync positions from Alpaca
+- [x] Call `check_exits()` and execute sells
+- [x] Call `find_entries()` and execute buys
+- [x] Log cycle summary (equity, positions, signals)
 
 #### 3.6 Implement run() Main Loop
-- [ ] Run startup checks
-- [ ] Wait for market open if before hours
-- [ ] Loop: run_cycle() every 5 minutes during market hours
-- [ ] Handle Ctrl+C gracefully
-- [ ] Log daily summary at market close
+- [x] Run startup checks
+- [x] Wait for market open if before hours
+- [x] Loop: run_cycle() every 5 minutes during market hours
+- [x] Handle Ctrl+C gracefully
+- [x] Log daily summary at market close
 
-**Acceptance:** Bot runs continuously during market hours, stops cleanly
+---
+
+### Phase 4: Position Validation (Robustness) [IN PROGRESS]
+
+#### 4.1 Add validate_positions() Method
+- [ ] Create `validate_positions()` method in ConnorsBot
+- [ ] Get current indicator data for all positions from DB
+- [ ] Return list of positions that should be exited with reason
+
+**Acceptance:** Method returns list of invalid positions
+
+#### 4.2 Check Trend Broken (SMA200)
+- [ ] For each position, check if `close < sma200`
+- [ ] If true, mark for exit with reason "trend_broken"
+- [ ] Log: "Position {symbol} below SMA200 - trend broken"
+
+**Acceptance:** Positions below SMA200 flagged for exit
+
+#### 4.3 Check Stop Loss Hit
+- [ ] For each position, check if `close <= stop_loss`
+- [ ] If true, mark for exit with reason "stop_hit"
+- [ ] Log: "Position {symbol} at ${close} hit stop ${stop_loss}"
+
+**Acceptance:** Positions at/below stop flagged for exit
+
+#### 4.4 Check RSI Exit Triggered
+- [ ] For each position, check if `rsi > EXIT_RSI` (60)
+- [ ] If true, mark for exit with reason "rsi_exit"
+- [ ] Log: "Position {symbol} RSI={rsi} triggered exit"
+
+**Acceptance:** Positions with RSI > 60 flagged for exit
+
+#### 4.5 Integrate Validation into Startup
+- [ ] Call `sync_positions()` in startup after health checks
+- [ ] Call `validate_positions()` after sync
+- [ ] Auto-exit all invalid positions before first cycle
+- [ ] Log validation summary: "X positions valid, Y positions exited"
+
+**Acceptance:** Invalid positions closed before trading begins
+
+#### 4.6 Add Clear Logging for Validation
+- [ ] Log header: "VALIDATING EXISTING POSITIONS"
+- [ ] Log each position check result
+- [ ] Log summary of exits performed
+- [ ] Log final position count after validation
+
+**Acceptance:** Clear visibility into what validation found
+
+---
+
+### Phase 5: Alpaca Real-Time Stop Protection [PENDING]
+
+#### 5.1 Add submit_bracket_order() to AlpacaClient
+- [ ] Create method: `submit_bracket_order(symbol, qty, stop_price)`
+- [ ] Use Alpaca's bracket order API
+- [ ] Submit buy order + stop loss order together
+- [ ] Return dict with `order_id` and `stop_order_id`
+
+**Acceptance:** Bracket orders appear in Alpaca dashboard
+
+#### 5.2 Add cancel_order() Method
+- [ ] Create method: `cancel_order(order_id)`
+- [ ] Cancel pending/open order by ID
+- [ ] Return True on success, False on failure
+- [ ] Handle "order not found" gracefully
+
+**Acceptance:** Can cancel stop orders before manual exit
+
+#### 5.3 Add get_open_orders() Method
+- [ ] Create method: `get_open_orders(symbol=None)`
+- [ ] Return list of open/pending orders
+- [ ] Filter by symbol if provided
+- [ ] Include order type, side, qty, stop_price
+
+**Acceptance:** Can find existing stop orders
+
+#### 5.4 Track stop_order_id in Positions
+- [ ] Add `stop_order_id` field to position tracking dict
+- [ ] Store stop order ID when bracket order submitted
+- [ ] Clear stop order ID when position closed
+
+**Acceptance:** Position dict includes stop_order_id
+
+#### 5.5 Update find_entries() for Bracket Orders
+- [ ] Replace `submit_buy()` with `submit_bracket_order()`
+- [ ] Calculate stop_price: `entry_price * (1 - STOP_LOSS_PCT)`
+- [ ] Store returned `stop_order_id` in positions dict
+- [ ] Log: "ENTRY {symbol} with stop @ ${stop_price}"
+
+**Acceptance:** New entries create real-time stops
+
+#### 5.6 Update check_exits() to Cancel Stops
+- [ ] Before closing position, get `stop_order_id` from dict
+- [ ] Call `cancel_order(stop_order_id)` first
+- [ ] Then call `close_position(symbol)`
+- [ ] Log: "Cancelled stop order {id} before exit"
+
+**Acceptance:** No orphan stop orders after manual exit
+
+#### 5.7 Update sync_positions() for Alpaca-Executed Stops
+- [ ] When position disappears from Alpaca, check why
+- [ ] Check if stop order was filled
+- [ ] Log: "Stop loss executed by Alpaca for {symbol}"
+- [ ] Calculate and log P&L for Alpaca-executed stops
+
+**Acceptance:** Bot knows when Alpaca executed a stop
 
 ---
 
 ## Data Flow
 
-### Entry Flow (Every 5 Minutes)
+### Entry Flow (With Bracket Orders)
 ```
 1. Query indicators table
    └── WHERE rsi < 5 AND close > sma200 AND volume >= 100000
@@ -272,25 +391,67 @@ trading_bot/
    └── Limit to available slots
 
 3. For each candidate:
-   └── Calculate shares: (capital × 10%) / price
+   └── Calculate shares: (equity × 10%) / price
    └── Calculate stop: price × 0.97
-   └── Submit buy order to Alpaca
-   └── Track position locally
+   └── Submit BRACKET ORDER to Alpaca:
+       ├── BUY {shares} {symbol} @ market
+       └── STOP SELL {shares} {symbol} @ {stop_price}
+   └── Track position + stop_order_id locally
 ```
 
-### Exit Flow (Every 5 Minutes)
+### Exit Flow (Strategy Signal)
 ```
 1. Get indicator data for open positions
 
 2. For each position, check:
    └── RSI > 60? → Exit (signal)
    └── Close > SMA5? → Exit (trend)
-   └── Close < stop_loss? → Exit (risk)
 
 3. If exit triggered:
-   └── Submit sell order to Alpaca
+   └── Cancel stop order first (by stop_order_id)
+   └── Close position via Alpaca
    └── Remove from local tracking
    └── Log P&L
+```
+
+### Exit Flow (Alpaca Stop Triggered)
+```
+1. Alpaca monitors price 24/7
+
+2. Price hits stop_price:
+   └── Alpaca executes sell automatically
+   └── Stop order marked as "filled"
+
+3. Next sync_positions() cycle:
+   └── Bot sees position gone
+   └── Checks stop order status: "filled"
+   └── Logs: "Stop executed by Alpaca"
+   └── Removes from tracking
+```
+
+### Startup Flow (With Validation)
+```
+1. startup_checks()
+   └── Verify DB available
+   └── Verify Alpaca connected
+
+2. sync_positions()
+   └── Load all positions from Alpaca
+   └── Use avg_entry_price for stop calc
+
+3. validate_positions()
+   └── Check each position:
+       ├── close < sma200? → Invalid (trend broken)
+       ├── close <= stop_loss? → Invalid (stop hit)
+       └── rsi > 60? → Invalid (exit signal)
+   └── Return list of invalid positions
+
+4. Auto-exit invalid positions
+   └── Cancel any existing stop orders
+   └── Close positions
+   └── Log results
+
+5. Start trading cycles
 ```
 
 ---
@@ -301,7 +462,9 @@ trading_bot/
 |---------|----------------|
 | **Position Limit** | Max 5 concurrent positions |
 | **Position Size** | 10% of capital per trade |
-| **Stop Loss** | 3% below entry price |
+| **Stop Loss** | 3% below entry (real-time via Alpaca) |
+| **Trend Filter** | Only buy if close > SMA200 |
+| **Validation** | Exit if trend breaks (close < SMA200) |
 | **Liquidity Filter** | Min 100K volume |
 | **Price Filter** | Min $5.00 (no penny stocks) |
 
@@ -311,19 +474,29 @@ trading_bot/
 
 ### Log Format
 ```
-2024-01-15 10:35:00 INFO  Cycle 12 | Equity: $100,234 | Positions: 3/5
-2024-01-15 10:35:01 INFO  ENTRY AAPL | RSI: 4.2 | Price: $182.50 | Shares: 54
-2024-01-15 10:40:00 INFO  EXIT  MSFT | RSI: 62.1 | P&L: +$127.50 | Reason: signal
+2024-01-15 10:30:00 INFO  STARTUP CHECKS
+2024-01-15 10:30:01 INFO  Database check: PASSED
+2024-01-15 10:30:02 INFO  Alpaca check: PASSED - Equity: $100,000.00
+2024-01-15 10:30:03 INFO  VALIDATING EXISTING POSITIONS
+2024-01-15 10:30:04 INFO  Position AAPL: VALID (RSI=45, above SMA200)
+2024-01-15 10:30:05 INFO  Position MSFT: INVALID - stop hit ($280 <= $282)
+2024-01-15 10:30:06 INFO  Exiting MSFT - stop loss hit while offline
+2024-01-15 10:30:07 INFO  Validation complete: 1 valid, 1 exited
+2024-01-15 10:35:00 INFO  CYCLE #1 - Entry: TSLA x 41 @ $241.00 (stop @ $233.77)
+2024-01-15 10:40:00 INFO  CYCLE #2 - Exit: AAPL (RSI=62, reason=signal, P&L=+$127)
 ```
 
 ### Daily Summary
 ```
 ================== DAILY SUMMARY ==================
 Date: 2024-01-15
+Cycles: 78
 Trades: 8 (6 wins, 2 losses)
 Win Rate: 75%
+Stops Executed by Alpaca: 1
 Daily P&L: +$342.50
 Final Equity: $100,342.50
+Open Positions: 2
 ===================================================
 ```
 
@@ -358,41 +531,61 @@ tail -f logs/trading.log
 
 ## Task Checklist
 
-### Phase 1: Configuration & Data Layer
-- [ ] 1.1 Create config.py with paths and parameters
-- [ ] 1.2 Create data/indicators_db.py with connection setup
-- [ ] 1.3 Add get_entry_candidates() method
-- [ ] 1.4 Add helper methods (get_position_data, get_indicator)
+### Phase 1: Configuration & Data Layer [COMPLETED]
+- [x] 1.1 Create config.py with paths and parameters
+- [x] 1.2 Create data/indicators_db.py with connection setup
+- [x] 1.3 Add get_entry_candidates() method
+- [x] 1.4 Add helper methods (get_position_data, get_indicator)
 
-### Phase 2: Execution Layer
-- [ ] 2.1 Create execution/alpaca_client.py class setup
-- [ ] 2.2 Add account methods (get_account, get_positions, is_market_open)
-- [ ] 2.3 Add order methods (submit_buy, submit_sell, close_position)
+### Phase 2: Execution Layer [COMPLETED]
+- [x] 2.1 Create execution/alpaca_client.py class setup
+- [x] 2.2 Add account methods (get_account, get_positions, is_market_open)
+- [x] 2.3 Add order methods (submit_buy, submit_sell, close_position)
 
-### Phase 3: Bot Core
-- [ ] 3.1 Create connors_bot.py with __init__ and startup_checks
-- [ ] 3.2 Add is_market_hours() and sync_positions()
-- [ ] 3.3 Implement find_entries()
-- [ ] 3.4 Implement check_exits()
-- [ ] 3.5 Implement run_cycle()
-- [ ] 3.6 Implement run() main loop
+### Phase 3: Bot Core [COMPLETED]
+- [x] 3.1 Create connors_bot.py with __init__ and startup_checks
+- [x] 3.2 Add is_market_hours() and sync_positions()
+- [x] 3.3 Implement find_entries()
+- [x] 3.4 Implement check_exits()
+- [x] 3.5 Implement run_cycle()
+- [x] 3.6 Implement run() main loop
+
+### Phase 4: Position Validation [IN PROGRESS]
+- [ ] 4.1 Add validate_positions() method
+- [ ] 4.2 Check trend broken (close < SMA200)
+- [ ] 4.3 Check stop loss hit
+- [ ] 4.4 Check RSI exit triggered
+- [ ] 4.5 Integrate validation into startup
+- [ ] 4.6 Add clear logging for validation
+
+### Phase 5: Alpaca Real-Time Stop Protection [PENDING]
+- [ ] 5.1 Add submit_bracket_order() to AlpacaClient
+- [ ] 5.2 Add cancel_order() method
+- [ ] 5.3 Add get_open_orders() method
+- [ ] 5.4 Track stop_order_id in positions dict
+- [ ] 5.5 Update find_entries() for bracket orders
+- [ ] 5.6 Update check_exits() to cancel stops
+- [ ] 5.7 Update sync_positions() for Alpaca-executed stops
 
 ---
 
 ## Success Criteria
 
-| Metric | Target |
-|--------|--------|
-| Bot runs during market hours | Yes |
-| Reads from indicators table | Yes |
-| Executes paper trades on Alpaca | Yes |
-| Respects position limits | Max 5 |
-| Stop losses tracked | 3% |
-| Logs all trades | Yes |
-| Graceful shutdown | Ctrl+C |
+| Metric | Target | Status |
+|--------|--------|--------|
+| Bot runs during market hours | Yes | Done |
+| Reads from indicators table | Yes | Done |
+| Executes paper trades on Alpaca | Yes | Done |
+| Respects position limits | Max 5 | Done |
+| Logs all trades | Yes | Done |
+| Graceful shutdown | Ctrl+C | Done |
+| Validates positions on restart | Yes | Pending |
+| Auto-exits invalid positions | Yes | Pending |
+| Real-time stop protection | Yes | Pending |
+| Handles Alpaca-executed stops | Yes | Pending |
 
 ---
 
 ## Next Step
 
-**Start with Task 1.1:** Create `config.py` with database path and trading parameters.
+**Start with Task 4.1:** Add `validate_positions()` method to ConnorsBot.
