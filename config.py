@@ -54,7 +54,7 @@ MAX_POSITIONS = 5
 STOP_LOSS_PCT = 0.03  # 3% stop loss
 
 # Connors RSI strategy parameters
-ENTRY_RSI = 5   # Enter when RSI drops below this level
+ENTRY_RSI = 10  # Enter when RSI drops below this level (65-75% win rate)
 # EXIT: Close > SMA5 (true Connors exit - no RSI exit threshold)
 
 # Stock filtering criteria

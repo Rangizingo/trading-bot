@@ -10,7 +10,7 @@ import time
 from typing import Dict, List, Optional
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest
+from alpaca.trading.requests import MarketOrderRequest, StopOrderRequest, GetOrdersRequest
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderType, QueryOrderStatus
 from alpaca.common.exceptions import APIError
 
@@ -331,6 +331,9 @@ class AlpacaClient:
             # Ensure qty is integer
             qty = int(qty)
 
+            # Cancel any existing orders for this symbol to prevent wash trade errors
+            self.cancel_orders_for_symbol(symbol)
+
             # First, submit the market buy order with GTC for consistency
             buy_order_data = MarketOrderRequest(
                 symbol=symbol,
@@ -359,7 +362,7 @@ class AlpacaClient:
                     filled_order = current_order
                     logger.info(
                         f"Bracket order - Buy order filled: {symbol} x {current_order.filled_qty} "
-                        f"@ ${current_order.filled_avg_price:.2f}"
+                        f"@ ${float(current_order.filled_avg_price):.2f}"
                     )
                     break
                 elif current_order.status.value in ['cancelled', 'expired', 'rejected']:
@@ -474,6 +477,41 @@ class AlpacaClient:
         except Exception as e:
             logger.error(f"Unexpected error cancelling order {order_id}: {e}")
             return False
+
+    def cancel_orders_for_symbol(self, symbol: str) -> int:
+        """
+        Cancel all open orders for a specific symbol.
+
+        Used before placing new orders to prevent wash trade errors.
+
+        Args:
+            symbol: Stock symbol to cancel orders for.
+
+        Returns:
+            Number of orders cancelled.
+        """
+        try:
+            # Get open orders for this symbol
+            request = GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+            orders = self.client.get_orders(filter=request)
+
+            cancelled_count = 0
+            for order in orders:
+                try:
+                    self.client.cancel_order_by_id(order.id)
+                    logger.info(f"Cancelled existing order for {symbol}: {order.side.value} {order.qty} @ {order.type.value} (id={order.id})")
+                    cancelled_count += 1
+                except APIError as e:
+                    logger.warning(f"Could not cancel order {order.id} for {symbol}: {e}")
+
+            if cancelled_count > 0:
+                logger.info(f"Cancelled {cancelled_count} existing order(s) for {symbol}")
+
+            return cancelled_count
+
+        except Exception as e:
+            logger.error(f"Error cancelling orders for {symbol}: {e}")
+            return 0
 
     def get_open_orders(self, symbol: str = None) -> List[Dict]:
         """
