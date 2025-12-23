@@ -6,6 +6,7 @@ Supports both paper and live trading environments.
 """
 
 import logging
+import time
 from typing import Dict, List, Optional
 
 from alpaca.trading.client import TradingClient
@@ -194,6 +195,9 @@ class AlpacaClient:
             Returns None if order fails.
         """
         try:
+            # Ensure qty is integer
+            qty = int(qty)
+
             # Create market order request
             order_data = MarketOrderRequest(
                 symbol=symbol,
@@ -241,6 +245,9 @@ class AlpacaClient:
             Returns None if order fails.
         """
         try:
+            # Ensure qty is integer
+            qty = int(qty)
+
             # Create market order request
             order_data = MarketOrderRequest(
                 symbol=symbol,
@@ -302,7 +309,8 @@ class AlpacaClient:
 
         This submits two separate orders:
         1. A market buy order
-        2. A stop loss sell order
+        2. Wait for the buy order to fill (up to 60 seconds)
+        3. A stop loss sell order based on actual fill price
 
         Args:
             symbol: Stock symbol to buy.
@@ -311,20 +319,24 @@ class AlpacaClient:
 
         Returns:
             Dictionary with bracket order details if successful:
-                - order_id: Primary buy order ID (str)
-                - stop_order_id: Stop loss order ID (str)
+                - buy_order: Buy order details dict
+                - stop_order: Stop order details dict
+                - fill_price: Actual fill price from buy order (float)
                 - symbol: Stock symbol (str)
-                - qty: Number of shares (int)
+                - qty: Number of shares actually filled (int)
                 - stop_price: Stop loss price (float)
             Returns None if either order fails.
         """
         try:
-            # First, submit the market buy order
+            # Ensure qty is integer
+            qty = int(qty)
+
+            # First, submit the market buy order with GTC for consistency
             buy_order_data = MarketOrderRequest(
                 symbol=symbol,
                 qty=qty,
                 side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY
+                time_in_force=TimeInForce.GTC  # Use GTC for consistency with stop order
             )
             buy_order = self.client.submit_order(buy_order_data)
 
@@ -333,10 +345,57 @@ class AlpacaClient:
                 f"order_id={buy_order.id}, status={buy_order.status}"
             )
 
-            # Then, submit the stop loss sell order
+            # Poll for fill status (up to 60 seconds, checking every 0.5 seconds)
+            max_wait_time = 60.0  # seconds
+            poll_interval = 0.5  # seconds
+            elapsed_time = 0.0
+            filled_order = None
+
+            while elapsed_time < max_wait_time:
+                # Get current order status
+                current_order = self.client.get_order_by_id(buy_order.id)
+
+                if current_order.status.value in ['filled', 'partially_filled']:
+                    filled_order = current_order
+                    logger.info(
+                        f"Bracket order - Buy order filled: {symbol} x {current_order.filled_qty} "
+                        f"@ ${current_order.filled_avg_price:.2f}"
+                    )
+                    break
+                elif current_order.status.value in ['cancelled', 'expired', 'rejected']:
+                    logger.error(
+                        f"Bracket order - Buy order {current_order.status.value}: {symbol}, "
+                        f"order_id={buy_order.id}"
+                    )
+                    return None
+
+                # Wait before next poll
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+
+            # Check if we got a fill
+            if filled_order is None:
+                logger.error(
+                    f"Bracket order - Buy order did not fill within {max_wait_time}s: "
+                    f"{symbol}, order_id={buy_order.id}"
+                )
+                # Attempt to cancel the unfilled order
+                self.cancel_order(buy_order.id)
+                return None
+
+            # Get actual fill price and quantity
+            actual_fill_price = float(filled_order.filled_avg_price)
+            actual_qty = int(filled_order.filled_qty)
+
+            logger.info(
+                f"Bracket order - Using actual fill price ${actual_fill_price:.2f} "
+                f"and quantity {actual_qty} for stop order"
+            )
+
+            # Now submit the stop loss sell order with GTC and actual quantity
             stop_order_data = StopOrderRequest(
                 symbol=symbol,
-                qty=qty,
+                qty=actual_qty,
                 side=OrderSide.SELL,
                 time_in_force=TimeInForce.GTC,  # Good-til-cancelled for stop loss
                 stop_price=stop_price
@@ -344,16 +403,33 @@ class AlpacaClient:
             stop_order = self.client.submit_order(stop_order_data)
 
             logger.info(
-                f"Bracket order - Stop loss submitted: {symbol} x {qty} @ ${stop_price:.2f}, "
+                f"Bracket order - Stop loss submitted: {symbol} x {actual_qty} @ ${stop_price:.2f}, "
                 f"stop_order_id={stop_order.id}, status={stop_order.status}"
             )
 
             result = {
-                "order_id": buy_order.id,
-                "stop_order_id": stop_order.id,
+                "buy_order": {
+                    "id": filled_order.id,
+                    "symbol": filled_order.symbol,
+                    "qty": actual_qty,
+                    "side": filled_order.side.value,
+                    "status": filled_order.status.value
+                },
+                "stop_order": {
+                    "id": stop_order.id,
+                    "symbol": stop_order.symbol,
+                    "qty": int(stop_order.qty),
+                    "side": stop_order.side.value,
+                    "status": stop_order.status.value,
+                    "stop_price": stop_price
+                },
+                "fill_price": actual_fill_price,
                 "symbol": symbol,
-                "qty": qty,
-                "stop_price": stop_price
+                "qty": actual_qty,
+                "stop_price": stop_price,
+                # Legacy fields for backward compatibility
+                "order_id": filled_order.id,
+                "stop_order_id": stop_order.id
             }
 
             logger.info(f"Bracket order completed: {result}")

@@ -39,6 +39,32 @@ from config import (
 from data.indicators_db import IndicatorsDB
 from execution.alpaca_client import AlpacaClient
 
+# NYSE Market Holidays for 2024-2025
+NYSE_HOLIDAYS_2024_2025 = {
+    # 2024
+    datetime(2024, 1, 1).date(),   # New Year's Day
+    datetime(2024, 1, 15).date(),  # Martin Luther King Jr. Day
+    datetime(2024, 2, 19).date(),  # Presidents' Day
+    datetime(2024, 3, 29).date(),  # Good Friday
+    datetime(2024, 5, 27).date(),  # Memorial Day
+    datetime(2024, 6, 19).date(),  # Juneteenth
+    datetime(2024, 7, 4).date(),   # Independence Day
+    datetime(2024, 9, 2).date(),   # Labor Day
+    datetime(2024, 11, 28).date(), # Thanksgiving
+    datetime(2024, 12, 25).date(), # Christmas
+    # 2025
+    datetime(2025, 1, 1).date(),   # New Year's Day
+    datetime(2025, 1, 20).date(),  # Martin Luther King Jr. Day
+    datetime(2025, 2, 17).date(),  # Presidents' Day
+    datetime(2025, 4, 18).date(),  # Good Friday
+    datetime(2025, 5, 26).date(),  # Memorial Day
+    datetime(2025, 6, 19).date(),  # Juneteenth
+    datetime(2025, 7, 4).date(),   # Independence Day
+    datetime(2025, 9, 1).date(),   # Labor Day
+    datetime(2025, 11, 27).date(), # Thanksgiving
+    datetime(2025, 12, 25).date(), # Christmas
+}
+
 
 class ConnorsBot:
     """
@@ -153,6 +179,7 @@ class ConnorsBot:
     def is_market_hours(self) -> bool:
         """
         Check if current time is within market hours (Mon-Fri, 9:30 AM - 4:00 PM ET).
+        Also checks for NYSE market holidays.
 
         Returns:
             True if market is open, False otherwise.
@@ -161,6 +188,10 @@ class ConnorsBot:
 
         # Check if weekday (Monday=0, Friday=4)
         if now.weekday() >= 5:  # Saturday or Sunday
+            return False
+
+        # Check if it's a market holiday
+        if now.date() in NYSE_HOLIDAYS_2024_2025:
             return False
 
         # Check if within market hours
@@ -229,20 +260,24 @@ class ConnorsBot:
 
                             self.logger.info(
                                 f"Stop loss executed by Alpaca for {symbol}: "
-                                f"{shares} shares @ ${stop_price:.2f}, P&L=${pnl:+.2f}"
+                                f"{shares} shares @ ${stop_price:.2f}, P&L=${pnl:+.2f} "
+                                f"(stop_order_id={stop_order_id})"
                             )
                         else:
+                            status = order_status.get('status') if order_status else 'unknown'
                             self.logger.info(
                                 f"Removing closed position from tracking: {symbol} "
-                                f"(stop order {stop_order_id} status: {order_status.get('status') if order_status else 'unknown'})"
+                                f"(stop_order_id={stop_order_id}, status={status})"
                             )
                     except Exception as e:
                         self.logger.warning(
-                            f"Could not check stop order {stop_order_id} for {symbol}: {e}"
+                            f"Could not check stop order for {symbol} (stop_order_id={stop_order_id}): {e}"
                         )
                         self.logger.info(f"Removing closed position from tracking: {symbol}")
                 else:
-                    self.logger.info(f"Removing closed position from tracking: {symbol}")
+                    self.logger.info(
+                        f"Removing closed position from tracking: {symbol} (no stop order on record)"
+                    )
 
                 del self.positions[symbol]
 
@@ -255,17 +290,18 @@ class ConnorsBot:
         """
         Validate existing positions against exit conditions on startup.
 
-        Checks all positions for three exit conditions:
-        1. Trend broken: close < sma200
-        2. Stop hit: close <= stop_loss
+        Checks all positions for four exit conditions:
+        1. Stop hit: close <= stop_loss
+        2. Trend broken: close < sma200
         3. RSI exit: rsi > EXIT_RSI
+        4. SMA5 exit: close > sma5
 
         Returns:
             List of invalid position dicts containing:
                 - symbol: Stock symbol
                 - shares: Number of shares
                 - current_price: Current market price
-                - reason: Exit reason (trend_broken/stop_hit/rsi_exit)
+                - reason: Exit reason (stop_hit/trend_broken/rsi_exit/sma5_exit)
                 - pnl: Profit/loss amount
         """
         if not self.positions:
@@ -294,6 +330,7 @@ class ConnorsBot:
             current_price = data['close']
             rsi = data['rsi']
             sma200 = data['sma200']
+            sma5 = data['sma5']
 
             entry_price = pos_info['entry_price']
             stop_loss = pos_info['stop_loss']
@@ -326,6 +363,13 @@ class ConnorsBot:
                     f"{symbol}: INVALID - RSI exit (RSI={rsi:.2f} > {EXIT_RSI})"
                 )
 
+            # 4. SMA5 exit - price above SMA5
+            elif current_price > sma5:
+                exit_reason = "sma5_exit"
+                self.logger.info(
+                    f"{symbol}: INVALID - SMA5 exit (Price=${current_price:.2f} > SMA5=${sma5:.2f})"
+                )
+
             # Build invalid position signal if any condition met
             if exit_reason:
                 invalid_position = {
@@ -339,7 +383,7 @@ class ConnorsBot:
 
                 self.logger.debug(
                     f"{symbol} validation details: Entry=${entry_price:.2f}, Current=${current_price:.2f}, "
-                    f"Stop=${stop_loss:.2f}, RSI={rsi:.2f}, SMA200=${sma200:.2f}, P&L=${pnl:+.2f}"
+                    f"Stop=${stop_loss:.2f}, RSI={rsi:.2f}, SMA200=${sma200:.2f}, SMA5=${sma5:.2f}, P&L=${pnl:+.2f}"
                 )
             else:
                 valid_count += 1
@@ -360,7 +404,7 @@ class ConnorsBot:
         Find new entry candidates based on Connors RSI strategy.
 
         Screens database for oversold stocks, filters out existing positions,
-        and calculates position sizing based on available account equity.
+        and calculates position sizing based on available buying power with safety margin.
 
         Uses bracket orders for entries to provide immediate stop loss protection.
 
@@ -402,13 +446,26 @@ class ConnorsBot:
             self.logger.info("All candidates filtered out (already in positions)")
             return []
 
-        # Get current account equity
+        # Get current account info
         try:
             account = self.alpaca.get_account()
-            current_equity = account['equity']
+            buying_power = account['buying_power']
+            equity = account['equity']
         except Exception as e:
-            self.logger.error(f"Failed to get account equity: {e}")
+            self.logger.error(f"Failed to get account info: {e}")
             return []
+
+        # Calculate position size with safety margin
+        # Use min of: 95% of buying power, or equity-based position size
+        safe_buying_power = buying_power * 0.95
+        equity_based_size = equity * POSITION_SIZE_PCT
+        position_value = min(safe_buying_power, equity_based_size)
+
+        self.logger.debug(
+            f"Position sizing: buying_power=${buying_power:.2f}, equity=${equity:.2f}, "
+            f"safe_buying_power=${safe_buying_power:.2f}, equity_based=${equity_based_size:.2f}, "
+            f"using=${position_value:.2f}"
+        )
 
         # Build entry signals
         entry_signals = []
@@ -419,7 +476,6 @@ class ConnorsBot:
             rsi = candidate['rsi']
 
             # Calculate position size
-            position_value = current_equity * POSITION_SIZE_PCT
             shares = int(position_value / close_price)
 
             if shares == 0:
@@ -453,10 +509,10 @@ class ConnorsBot:
         """
         Check exit conditions for all open positions.
 
-        Evaluates three exit criteria:
-        1. RSI > EXIT_RSI (signal exit - take profit on overbought)
-        2. close > sma5 (trend exit - momentum reversal)
-        3. close <= stop_loss (risk exit - stop loss hit)
+        Evaluates three exit criteria in priority order:
+        1. close <= stop_loss (risk exit - stop loss hit) - HIGHEST PRIORITY
+        2. RSI > EXIT_RSI (signal exit - take profit on overbought)
+        3. close > sma5 (trend exit - momentum reversal)
 
         When exiting, cancels any existing stop orders before closing the position.
 
@@ -465,7 +521,7 @@ class ConnorsBot:
                 - symbol: Stock symbol
                 - shares: Number of shares to sell
                 - current_price: Current market price
-                - reason: Exit reason (signal/trend/risk)
+                - reason: Exit reason (risk/signal/trend)
                 - pnl: Profit/loss amount
         """
         if not self.positions:
@@ -498,28 +554,28 @@ class ConnorsBot:
             # Calculate P&L
             pnl = (current_price - entry_price) * shares
 
-            # Check exit conditions
+            # Check exit conditions in priority order
             exit_reason = None
 
-            # 1. RSI exit - overbought
-            if rsi > EXIT_RSI:
+            # 1. Stop loss hit (HIGHEST PRIORITY - capital protection)
+            if current_price <= stop_loss:
+                exit_reason = "risk"
+                self.logger.info(
+                    f"Exit signal (stop): {symbol} - Price=${current_price:.2f} <= Stop=${stop_loss:.2f}"
+                )
+
+            # 2. RSI exit - overbought
+            elif rsi > EXIT_RSI:
                 exit_reason = "signal"
                 self.logger.info(
                     f"Exit signal (RSI): {symbol} - RSI={rsi:.2f} > {EXIT_RSI}"
                 )
 
-            # 2. Trend exit - price above SMA5
+            # 3. Trend exit - price above SMA5
             elif current_price > sma5:
                 exit_reason = "trend"
                 self.logger.info(
-                    f"Exit signal (trend): {symbol} - Price=${current_price:.2f} > SMA5=${sma5:.2f}"
-                )
-
-            # 3. Stop loss hit
-            elif current_price <= stop_loss:
-                exit_reason = "risk"
-                self.logger.info(
-                    f"Exit signal (stop): {symbol} - Price=${current_price:.2f} <= Stop=${stop_loss:.2f}"
+                    f"Exit signal (SMA5): {symbol} - Price=${current_price:.2f} > SMA5=${sma5:.2f}"
                 )
 
             # Build exit signal if any condition met
@@ -589,11 +645,17 @@ class ConnorsBot:
                 if stop_order_id:
                     try:
                         if self.alpaca.cancel_order(stop_order_id):
-                            self.logger.info(f"Cancelled stop order {stop_order_id} before exit")
+                            self.logger.info(
+                                f"Cancelled stop order for {symbol} (stop_order_id={stop_order_id})"
+                            )
                         else:
-                            self.logger.warning(f"Failed to cancel stop order {stop_order_id}")
+                            self.logger.warning(
+                                f"Failed to cancel stop order for {symbol} (stop_order_id={stop_order_id})"
+                            )
                     except Exception as e:
-                        self.logger.warning(f"Error cancelling stop order {stop_order_id}: {e}")
+                        self.logger.warning(
+                            f"Error cancelling stop order for {symbol} (stop_order_id={stop_order_id}): {e}"
+                        )
 
             # Execute close position
             if self.alpaca.close_position(symbol):
@@ -604,9 +666,15 @@ class ConnorsBot:
                 if symbol in self.positions:
                     del self.positions[symbol]
 
-                self.logger.info(f"EXIT SUCCESS: {symbol} closed")
+                self.logger.info(
+                    f"EXIT SUCCESS: {symbol} - {shares} shares closed @ ${current_price:.2f}, "
+                    f"P&L=${pnl:+.2f}"
+                )
             else:
-                self.logger.error(f"EXIT FAILED: {symbol} could not be closed")
+                self.logger.error(
+                    f"EXIT FAILED: {symbol} - Position close rejected. "
+                    f"Check broker status and position availability."
+                )
 
         # Step 3: Find and execute entries
         entry_signals = self.find_entries()
@@ -633,20 +701,33 @@ class ConnorsBot:
                 order_id = result.get('order_id')
                 stop_order_id = result.get('stop_order_id')
 
+                # Use fill price if available, otherwise use expected entry price
+                fill_price = result.get('fill_price', entry_price)
+
                 # Add to position tracking
                 self.positions[symbol] = {
-                    'entry_price': entry_price,
+                    'entry_price': fill_price,
                     'stop_loss': stop_loss,
                     'shares': shares,
                     'stop_order_id': stop_order_id
                 }
 
                 self.logger.info(
-                    f"ENTRY SUCCESS: {symbol} bracket order submitted "
+                    f"ENTRY SUCCESS: {symbol} - {shares} shares @ ${fill_price:.2f} "
                     f"(order_id={order_id}, stop_order_id={stop_order_id})"
                 )
+
+                # Log fill details if fill price differs from expected
+                if abs(fill_price - entry_price) > 0.01:
+                    self.logger.info(
+                        f"Fill price note: Expected ${entry_price:.2f}, Filled @ ${fill_price:.2f} "
+                        f"(diff=${fill_price - entry_price:+.2f})"
+                    )
             else:
-                self.logger.error(f"ENTRY FAILED: {symbol} bracket order could not be submitted")
+                self.logger.error(
+                    f"ENTRY FAILED: {symbol} - Bracket order rejected. "
+                    f"Check account buying power and order limits."
+                )
 
         # Step 4: Get current account state
         try:
@@ -728,11 +809,17 @@ class ConnorsBot:
                     if stop_order_id:
                         try:
                             if self.alpaca.cancel_order(stop_order_id):
-                                self.logger.info(f"Cancelled stop order {stop_order_id} before exit")
+                                self.logger.info(
+                                    f"Cancelled stop order for {symbol} (stop_order_id={stop_order_id})"
+                                )
                             else:
-                                self.logger.warning(f"Failed to cancel stop order {stop_order_id}")
+                                self.logger.warning(
+                                    f"Failed to cancel stop order for {symbol} (stop_order_id={stop_order_id})"
+                                )
                         except Exception as e:
-                            self.logger.warning(f"Error cancelling stop order {stop_order_id}: {e}")
+                            self.logger.warning(
+                                f"Error cancelling stop order for {symbol} (stop_order_id={stop_order_id}): {e}"
+                            )
 
                 # Execute close position
                 if self.alpaca.close_position(symbol):
@@ -740,9 +827,15 @@ class ConnorsBot:
                     if symbol in self.positions:
                         del self.positions[symbol]
 
-                    self.logger.info(f"EXIT SUCCESS: {symbol} closed")
+                    self.logger.info(
+                        f"EXIT SUCCESS: {symbol} - {shares} shares closed @ ${current_price:.2f}, "
+                        f"P&L=${pnl:+.2f}"
+                    )
                 else:
-                    self.logger.error(f"EXIT FAILED: {symbol} could not be closed")
+                    self.logger.error(
+                        f"EXIT FAILED: {symbol} - Position close rejected. "
+                        f"Check broker status and position availability."
+                    )
 
             self.logger.info("=" * 70)
             self.logger.info(f"Auto-exit complete: {len(invalid_positions)} positions closed")

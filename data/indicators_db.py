@@ -14,6 +14,7 @@ The database is populated externally and used for real-time trading decisions.
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional
+from contextlib import contextmanager
 import logging
 
 from config import INTRADAY_DB_PATH
@@ -51,6 +52,7 @@ class IndicatorsDB:
             Connection is not established until first query to minimize resource usage.
         """
         self.db_path = db_path or INTRADAY_DB_PATH
+        self._connection: Optional[sqlite3.Connection] = None
         logger.info(f"IndicatorsDB initialized with path: {self.db_path}")
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -70,6 +72,30 @@ class IndicatorsDB:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 30000")
         return conn
+
+    @contextmanager
+    def connection(self):
+        """
+        Context manager for database connection reuse.
+
+        Provides a reusable connection for multiple queries within a single
+        context. The connection is automatically closed when exiting the context.
+
+        Yields:
+            sqlite3.Connection: Reusable database connection
+
+        Example:
+            >>> db = IndicatorsDB()
+            >>> with db.connection() as conn:
+            ...     # Multiple queries can reuse this connection
+            ...     cursor = conn.execute("SELECT * FROM indicators WHERE symbol = ?", ("AAPL",))
+            ...     result = cursor.fetchone()
+        """
+        conn = self._get_conn()
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def is_available(self) -> bool:
         """
@@ -148,7 +174,13 @@ class IndicatorsDB:
                 volume
             FROM indicators
             WHERE
-                rsi < ?
+                rsi IS NOT NULL
+                AND sma200 IS NOT NULL
+                AND sma5 IS NOT NULL
+                AND close IS NOT NULL
+                AND volume IS NOT NULL
+                AND atr IS NOT NULL
+                AND rsi <= ?
                 AND close > sma200
                 AND volume >= ?
                 AND close >= ?
@@ -208,6 +240,11 @@ class IndicatorsDB:
                 atr
             FROM indicators
             WHERE symbol IN ({placeholders})
+                AND rsi IS NOT NULL
+                AND sma200 IS NOT NULL
+                AND sma5 IS NOT NULL
+                AND close IS NOT NULL
+                AND atr IS NOT NULL
         """
 
         try:
