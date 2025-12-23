@@ -27,6 +27,7 @@ from config import (
     MAX_POSITIONS,
     STOP_LOSS_PCT,
     ENTRY_RSI,
+    ENTRY_CRSI,
     MIN_VOLUME,
     MIN_PRICE,
     MARKET_OPEN,
@@ -411,7 +412,7 @@ class ConnorsBot:
 
         # Get entry candidates from database
         candidates = self.db.get_entry_candidates(
-            max_rsi=ENTRY_RSI,
+            max_crsi=ENTRY_CRSI,
             min_volume=MIN_VOLUME,
             min_price=MIN_PRICE,
             limit=available_slots * 2  # Get extra to allow for filtering
@@ -456,6 +457,7 @@ class ConnorsBot:
             symbol = candidate['symbol']
             close_price = candidate['close']
             rsi = candidate['rsi']
+            crsi = candidate['crsi']
 
             # Calculate position size
             shares = int(position_value / close_price)
@@ -474,14 +476,15 @@ class ConnorsBot:
                 'shares': shares,
                 'entry_price': close_price,
                 'stop_loss': stop_loss,
-                'rsi': rsi
+                'rsi': rsi,
+                'crsi': crsi
             }
 
             entry_signals.append(entry_signal)
 
             self.logger.info(
                 f"Entry candidate: {symbol} - {shares} shares @ ${close_price:.2f}, "
-                f"RSI={rsi:.2f}, Stop=${stop_loss:.2f}"
+                f"CRSI={crsi:.2f}, RSI={rsi:.2f}, Stop=${stop_loss:.2f}"
             )
 
         self.logger.info(f"Found {len(entry_signals)} entry signals")
@@ -639,10 +642,11 @@ class ConnorsBot:
             entry_price = entry_signal['entry_price']
             stop_loss = entry_signal['stop_loss']
             rsi = entry_signal['rsi']
+            crsi = entry_signal['crsi']
 
             self.logger.info(
                 f"Executing ENTRY: {symbol} x {shares} @ ~${entry_price:.2f} "
-                f"with {STOP_LOSS_PCT*100:.1f}% stop (RSI={rsi:.2f})"
+                f"with {STOP_LOSS_PCT*100:.1f}% stop (CRSI={crsi:.2f}, RSI={rsi:.2f})"
             )
 
             # Execute bracket order - pass stop loss PERCENTAGE, not price
@@ -723,7 +727,7 @@ class ConnorsBot:
         self.logger.info("CONNORS RSI TRADING BOT")
         self.logger.info("=" * 70)
         self.logger.info(f"Started: {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S %Z')}")
-        self.logger.info(f"Strategy: Entry RSI <= {ENTRY_RSI}, Exit Close > SMA5")
+        self.logger.info(f"Strategy: Entry CRSI <= {ENTRY_CRSI}, Exit Close > SMA5")
         self.logger.info(f"Position Size: {POSITION_SIZE_PCT*100:.0f}% per position")
         self.logger.info(f"Max Positions: {MAX_POSITIONS}")
         self.logger.info(f"Stop Loss: {STOP_LOSS_PCT*100:.0f}%")

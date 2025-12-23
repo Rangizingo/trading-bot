@@ -154,6 +154,7 @@ class IndicatorsDB:
     def get_entry_candidates(
         self,
         max_rsi: float = 5,
+        max_crsi: float = 5,
         min_volume: int = 100000,
         min_price: float = 5.0,
         limit: int = 20
@@ -162,33 +163,35 @@ class IndicatorsDB:
         Find stocks matching entry criteria for true Connors RSI(2) strategy.
 
         Entry conditions (all must be true):
-        - RSI(2) <= max_rsi (oversold)
+        - ConnorsRSI <= max_crsi (oversold on ConnorsRSI composite indicator)
         - Close > SMA200 (in long-term uptrend)
         - Close < SMA5 (pulled back below short-term average)
 
         Screens with sufficient liquidity, ordered by most oversold first.
 
         Args:
-            max_rsi: Maximum RSI value (default 5 for extreme oversold)
+            max_rsi: Maximum RSI value (default 5, kept for backwards compatibility)
+            max_crsi: Maximum ConnorsRSI value (default 5 for extreme oversold)
             min_volume: Minimum daily volume (default 100,000)
             min_price: Minimum stock price (default $5.00)
             limit: Maximum number of results to return (default 20)
 
         Returns:
-            List of dicts containing: symbol, close, rsi, sma5, sma200, atr, volume.
-            Sorted by RSI ascending (most oversold first).
+            List of dicts containing: symbol, close, rsi, crsi, sma5, sma200, atr, volume.
+            Sorted by ConnorsRSI ascending (most oversold first).
 
         Example:
             >>> db = IndicatorsDB()
-            >>> candidates = db.get_entry_candidates(max_rsi=5, limit=10)
+            >>> candidates = db.get_entry_candidates(max_crsi=5, limit=10)
             >>> for stock in candidates:
-            ...     print(f"{stock['symbol']}: ${stock['close']:.2f}, RSI={stock['rsi']:.2f}")
+            ...     print(f"{stock['symbol']}: ${stock['close']:.2f}, CRSI={stock['crsi']:.2f}")
         """
         query = """
             SELECT
                 symbol,
                 close,
                 rsi,
+                crsi,
                 sma5,
                 sma200,
                 atr,
@@ -196,30 +199,32 @@ class IndicatorsDB:
             FROM indicators
             WHERE
                 rsi IS NOT NULL
+                AND crsi IS NOT NULL
                 AND sma200 IS NOT NULL
                 AND sma5 IS NOT NULL
                 AND close IS NOT NULL
                 AND volume IS NOT NULL
                 AND atr IS NOT NULL
                 AND rsi > 0
-                AND rsi <= ?
+                AND crsi > 0
+                AND crsi <= ?
                 AND close > sma200
                 AND close < sma5
                 AND volume >= ?
                 AND close >= ?
-            ORDER BY rsi ASC
+            ORDER BY crsi ASC
             LIMIT ?
         """
 
         try:
             with self._get_conn() as conn:
-                cursor = conn.execute(query, (max_rsi, min_volume, min_price, limit))
+                cursor = conn.execute(query, (max_crsi, min_volume, min_price, limit))
                 rows = cursor.fetchall()
 
                 results = [dict(row) for row in rows]
                 logger.info(
                     f"Found {len(results)} entry candidates "
-                    f"(max_rsi={max_rsi}, min_volume={min_volume:,}, "
+                    f"(max_crsi={max_crsi}, min_volume={min_volume:,}, "
                     f"min_price=${min_price:.2f})"
                 )
                 return results

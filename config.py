@@ -54,7 +54,8 @@ MAX_POSITIONS = 5
 STOP_LOSS_PCT = 0.03  # 3% stop loss
 
 # Connors RSI strategy parameters
-ENTRY_RSI = 10  # Enter when RSI drops below this level (65-75% win rate)
+ENTRY_RSI = 10  # Enter when RSI drops below this level (65-75% win rate) - DEPRECATED, use ENTRY_CRSI
+ENTRY_CRSI = 10  # Enter when ConnorsRSI drops below this level (true Connors strategy)
 # EXIT: Close > SMA5 (true Connors exit - no RSI exit threshold)
 
 # Stock filtering criteria
@@ -112,6 +113,9 @@ def validate_config() -> None:
 
     if ENTRY_RSI <= 0 or ENTRY_RSI >= 100:
         raise ValueError(f"ENTRY_RSI must be between 0 and 100, got {ENTRY_RSI}")
+
+    if ENTRY_CRSI <= 0 or ENTRY_CRSI >= 100:
+        raise ValueError(f"ENTRY_CRSI must be between 0 and 100, got {ENTRY_CRSI}")
 
 
 # Validate on import
