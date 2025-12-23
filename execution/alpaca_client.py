@@ -281,7 +281,8 @@ class AlpacaClient:
         """
         Close entire position for a symbol.
 
-        Submits a market order to liquidate the entire position.
+        Automatically cancels any open orders (stop losses) before closing
+        to free up shares that may be held by those orders.
 
         Args:
             symbol: Stock symbol to close.
@@ -290,7 +291,15 @@ class AlpacaClient:
             True if position was successfully closed, False otherwise.
         """
         try:
-            # Use Alpaca's close_position endpoint
+            # First, cancel any existing orders for this symbol to free up shares
+            cancelled_count = self.cancel_orders_for_symbol(symbol)
+
+            # If we cancelled orders, wait for Alpaca to process the cancellation
+            if cancelled_count > 0:
+                logger.info(f"Waiting 1 second for order cancellations to process...")
+                time.sleep(1.0)
+
+            # Now close the position
             self.client.close_position(symbol)
 
             logger.info(f"Position closed successfully: {symbol}")

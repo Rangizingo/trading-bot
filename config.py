@@ -58,7 +58,7 @@ ENTRY_RSI = 10  # Enter when RSI drops below this level (65-75% win rate)
 # EXIT: Close > SMA5 (true Connors exit - no RSI exit threshold)
 
 # Stock filtering criteria
-MIN_VOLUME = 0       # Disabled - intraday.db has per-bar volume, not daily
+MIN_VOLUME = 1000    # Minimum per-bar volume (filters out illiquid stocks like BBP)
 MIN_PRICE = 5.00     # Minimum stock price
 
 # =============================================================================

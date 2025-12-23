@@ -611,26 +611,7 @@ class ConnorsBot:
                 f"(reason={reason}, P&L=${pnl:+.2f})"
             )
 
-            # Cancel stop order if it exists
-            if symbol in self.positions:
-                stop_order_id = self.positions[symbol].get('stop_order_id')
-
-                if stop_order_id:
-                    try:
-                        if self.alpaca.cancel_order(stop_order_id):
-                            self.logger.info(
-                                f"Cancelled stop order for {symbol} (stop_order_id={stop_order_id})"
-                            )
-                        else:
-                            self.logger.warning(
-                                f"Failed to cancel stop order for {symbol} (stop_order_id={stop_order_id})"
-                            )
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Error cancelling stop order for {symbol} (stop_order_id={stop_order_id}): {e}"
-                        )
-
-            # Execute close position
+            # Execute close position (automatically cancels stop orders)
             if self.alpaca.close_position(symbol):
                 exits_executed += 1
                 total_pnl += pnl
@@ -777,26 +758,7 @@ class ConnorsBot:
                     f"(reason={reason}, P&L=${pnl:+.2f})"
                 )
 
-                # Cancel stop order if it exists
-                if symbol in self.positions:
-                    stop_order_id = self.positions[symbol].get('stop_order_id')
-
-                    if stop_order_id:
-                        try:
-                            if self.alpaca.cancel_order(stop_order_id):
-                                self.logger.info(
-                                    f"Cancelled stop order for {symbol} (stop_order_id={stop_order_id})"
-                                )
-                            else:
-                                self.logger.warning(
-                                    f"Failed to cancel stop order for {symbol} (stop_order_id={stop_order_id})"
-                                )
-                        except Exception as e:
-                            self.logger.warning(
-                                f"Error cancelling stop order for {symbol} (stop_order_id={stop_order_id}): {e}"
-                            )
-
-                # Execute close position
+                # Execute close position (automatically cancels stop orders)
                 if self.alpaca.close_position(symbol):
                     # Remove from tracking
                     if symbol in self.positions:
