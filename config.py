@@ -24,6 +24,9 @@ load_dotenv(dotenv_path="C:/Users/User/Documents/AI/VV7/.env")
 # Expand Windows environment variable to full path
 INTRADAY_DB_PATH = os.path.expandvars(r"%LOCALAPPDATA%\VV7SimpleBridge\intraday.db")
 
+# Sync completion marker file (written by VV7 main.py after sync completes)
+SYNC_COMPLETE_FILE = os.path.expandvars(r"%LOCALAPPDATA%\VV7SimpleBridge\sync_complete.txt")
+
 # =============================================================================
 # Alpaca API Credentials
 # =============================================================================

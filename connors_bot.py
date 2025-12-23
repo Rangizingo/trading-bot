@@ -33,7 +33,8 @@ from config import (
     MARKET_CLOSE,
     CYCLE_INTERVAL_MINUTES,
     ET,
-    LOG_DIR
+    LOG_DIR,
+    SYNC_COMPLETE_FILE
 )
 from data.indicators_db import IndicatorsDB
 from execution.alpaca_client import AlpacaClient
@@ -832,41 +833,39 @@ class ConnorsBot:
             time.sleep(60)  # Check every minute
 
         self.logger.info("Market is OPEN. Starting trading cycles...")
-        self.logger.info("Bot will run when database is updated by VV7 sync...")
+        self.logger.info("Bot will run when VV7 sync completes (watching sync_complete.txt)...")
         self.running = True
 
-        # Track last DB update timestamp
-        last_db_update = self.db.get_last_updated()
-        self.logger.info(f"Current DB timestamp: {last_db_update}")
+        # Track last sync completion file modification time
+        sync_file = Path(SYNC_COMPLETE_FILE)
+        last_sync_mtime = sync_file.stat().st_mtime if sync_file.exists() else 0
+        self.logger.info(f"Sync file: {sync_file}")
+        self.logger.info(f"Current sync file mtime: {last_sync_mtime}")
 
         try:
-            # Main trading loop - triggered by DB updates
+            # Main trading loop - triggered by sync completion file updates
             while self.running:
                 # Check if still in market hours
                 if not self.is_market_hours():
                     self.logger.info("Market has closed. Stopping trading cycles.")
                     break
 
-                # Wait for database to be updated by VV7 sync
-                current_db_update = self.db.get_last_updated()
+                # Check if sync completion file was updated
+                if sync_file.exists():
+                    current_mtime = sync_file.stat().st_mtime
 
-                if current_db_update > last_db_update:
-                    # DB was updated - wait a moment for sync to fully complete
-                    self.logger.info(f"DB updated: {last_db_update} -> {current_db_update}")
-                    self.logger.info("Waiting 3 seconds for sync to settle...")
-                    time.sleep(3)
-                    last_db_update = current_db_update
+                    if current_mtime > last_sync_mtime:
+                        # Sync completed - file was written by VV7
+                        self.logger.info(f"Sync complete detected (mtime: {last_sync_mtime} -> {current_mtime})")
+                        last_sync_mtime = current_mtime
 
-                    try:
-                        self.run_cycle()
-                    except Exception as e:
-                        self.logger.error(f"Error in trading cycle: {e}", exc_info=True)
-                else:
-                    # No update yet - wait and check again
-                    pass
+                        try:
+                            self.run_cycle()
+                        except Exception as e:
+                            self.logger.error(f"Error in trading cycle: {e}", exc_info=True)
 
-                # Check every 10 seconds for DB updates
-                time.sleep(10)
+                # Check every 5 seconds for sync completion
+                time.sleep(5)
 
         except KeyboardInterrupt:
             self.logger.info("")
