@@ -22,6 +22,31 @@ from config import INTRADAY_DB_PATH
 logger = logging.getLogger(__name__)
 
 
+def normalize_symbol(symbol: str) -> str:
+    """
+    Normalize symbol for database lookup (PBR.A -> PBRA).
+
+    VV7 database uses symbols without separators (e.g., PBRA),
+    while Alpaca returns symbols with dots (e.g., PBR.A).
+    This function removes all common separators for database lookups.
+
+    Args:
+        symbol: Stock symbol potentially containing separators
+
+    Returns:
+        Normalized symbol with separators removed
+
+    Example:
+        >>> normalize_symbol('PBR.A')
+        'PBRA'
+        >>> normalize_symbol('BRK-B')
+        'BRKB'
+        >>> normalize_symbol('AAPL')
+        'AAPL'
+    """
+    return symbol.replace('.', '').replace('-', '').replace('/', '')
+
+
 class IndicatorsDB:
     """
     Interface to SQLite database containing pre-computed technical indicators.
@@ -241,23 +266,28 @@ class IndicatorsDB:
         typically used for monitoring existing positions.
 
         Args:
-            symbols: List of stock symbols to lookup
+            symbols: List of stock symbols to lookup (e.g., ['PBR.A', 'AAPL'])
 
         Returns:
-            Dict mapping symbol -> indicator data dict containing:
+            Dict mapping ORIGINAL symbol -> indicator data dict containing:
             close, rsi, sma5, sma200, atr. Symbols not found are omitted.
+            Keys use original symbols (e.g., 'PBR.A') for Alpaca API compatibility.
 
         Example:
             >>> db = IndicatorsDB()
-            >>> positions = db.get_position_data(['AAPL', 'MSFT', 'GOOGL'])
+            >>> positions = db.get_position_data(['PBR.A', 'MSFT', 'GOOGL'])
             >>> for symbol, data in positions.items():
             ...     print(f"{symbol}: RSI={data['rsi']:.2f}, Price=${data['close']:.2f}")
         """
         if not symbols:
             return {}
 
+        # Create mapping of normalized -> original symbols for result mapping
+        symbol_map = {normalize_symbol(s): s for s in symbols}
+        normalized_symbols = list(symbol_map.keys())
+
         # Create parameterized query with placeholders
-        placeholders = ','.join('?' * len(symbols))
+        placeholders = ','.join('?' * len(normalized_symbols))
         query = f"""
             SELECT
                 symbol,
@@ -277,11 +307,17 @@ class IndicatorsDB:
 
         try:
             with self._get_conn() as conn:
-                cursor = conn.execute(query, symbols)
+                cursor = conn.execute(query, normalized_symbols)
                 rows = cursor.fetchall()
 
-                # Build dict mapping symbol -> data
-                results = {row['symbol']: dict(row) for row in rows}
+                # Build dict mapping ORIGINAL symbol -> data
+                # DB returns normalized symbols, we map back to original
+                results = {}
+                for row in rows:
+                    db_symbol = row['symbol']  # Normalized symbol from DB (PBRA)
+                    original_symbol = symbol_map.get(db_symbol)  # Original symbol (PBR.A)
+                    if original_symbol:
+                        results[original_symbol] = dict(row)
 
                 found_count = len(results)
                 missing = set(symbols) - set(results.keys())
@@ -303,32 +339,35 @@ class IndicatorsDB:
         Retrieve indicator data for a single symbol.
 
         Args:
-            symbol: Stock symbol to lookup
+            symbol: Stock symbol to lookup (e.g., 'PBR.A' or 'AAPL')
 
         Returns:
             Dict containing all indicator columns, or None if symbol not found.
+            Symbol is normalized for database lookup (PBR.A -> PBRA).
 
         Example:
             >>> db = IndicatorsDB()
-            >>> data = db.get_indicator('AAPL')
+            >>> data = db.get_indicator('PBR.A')  # Queries DB for 'PBRA'
             >>> if data:
-            ...     print(f"AAPL: RSI={data['rsi']:.2f}, Price=${data['close']:.2f}")
+            ...     print(f"PBR.A: RSI={data['rsi']:.2f}, Price=${data['close']:.2f}")
             ... else:
             ...     print("Symbol not found")
         """
+        # Normalize symbol for database lookup
+        normalized_symbol = normalize_symbol(symbol)
         query = "SELECT * FROM indicators WHERE symbol = ?"
 
         try:
             with self._get_conn() as conn:
-                cursor = conn.execute(query, (symbol,))
+                cursor = conn.execute(query, (normalized_symbol,))
                 row = cursor.fetchone()
 
                 if row:
                     result = dict(row)
-                    logger.debug(f"Found indicator data for {symbol}")
+                    logger.debug(f"Found indicator data for {symbol} (normalized: {normalized_symbol})")
                     return result
                 else:
-                    logger.debug(f"No indicator data found for {symbol}")
+                    logger.debug(f"No indicator data found for {symbol} (normalized: {normalized_symbol})")
                     return None
 
         except sqlite3.Error as e:
