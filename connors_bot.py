@@ -17,6 +17,7 @@ The bot runs a continuous cycle during market hours:
 import logging
 import time
 import sys
+import csv
 from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
@@ -174,6 +175,40 @@ def select_trading_mode() -> TradingMode:
                 sys.exit(0)
 
 
+def log_trade(action: str, symbol: str, shares: int, price: float, pnl: float = 0.0,
+              crsi: float = 0.0, hold_minutes: int = 0) -> None:
+    """
+    Log trade details to CSV journal for post-trade analysis.
+
+    Args:
+        action: Trade action - "ENTRY" or "EXIT"
+        symbol: Stock ticker symbol
+        shares: Number of shares traded
+        price: Execution price per share
+        pnl: Profit/loss amount (for exits only)
+        crsi: Connors RSI value at entry (for entries only)
+        hold_minutes: Minutes position was held (for exits only)
+    """
+    try:
+        journal_file = LOG_DIR / "trade_journal.csv"
+        file_exists = journal_file.exists()
+
+        with open(journal_file, mode='a', newline='') as f:
+            writer = csv.writer(f)
+
+            # Write headers if new file
+            if not file_exists:
+                writer.writerow(['timestamp', 'symbol', 'action', 'shares', 'price', 'pnl', 'crsi', 'hold_minutes'])
+
+            # Write trade record
+            timestamp = datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S')
+            writer.writerow([timestamp, symbol, action, shares, f'{price:.2f}', f'{pnl:.2f}', f'{crsi:.2f}', hold_minutes])
+
+    except Exception as e:
+        # Fail silently - don't crash bot for journal failures
+        logging.getLogger("ConnorsBot").warning(f"Failed to log trade to journal: {e}")
+
+
 class ConnorsBot:
     """
     Main trading bot orchestrator for Connors RSI strategy.
@@ -187,7 +222,7 @@ class ConnorsBot:
         mode: Trading mode (SAFE or CLASSIC)
         positions: Dict tracking open positions with entry prices, stop losses, and stop order IDs
                   Format: {symbol: {'entry_price': float, 'stop_loss': float,
-                                    'shares': int, 'stop_order_id': str|None}}
+                                    'shares': int, 'stop_order_id': str|None, 'entry_time': datetime}}
         cycle_count: Number of trading cycles executed
         running: Boolean flag indicating if bot is actively running
         logger: Logger instance for bot activity tracking
@@ -342,7 +377,8 @@ class ConnorsBot:
                         'entry_price': pos['avg_entry_price'],
                         'stop_loss': pos['avg_entry_price'] * (1 - STOP_LOSS_PCT),
                         'shares': int(pos['qty']),
-                        'stop_order_id': None  # Unknown stop order for existing positions
+                        'stop_order_id': None,  # Unknown stop order for existing positions
+                        'entry_time': datetime.now(ET)  # Use current time for pre-existing positions
                     }
                     self.logger.info(
                         f"Added existing position to tracking: {symbol} - "
@@ -805,6 +841,16 @@ class ConnorsBot:
                 exits_executed += 1
                 total_pnl += pnl
 
+                # Calculate hold duration
+                hold_minutes = 0
+                if symbol in self.positions and 'entry_time' in self.positions[symbol]:
+                    entry_time = self.positions[symbol]['entry_time']
+                    hold_duration = datetime.now(ET) - entry_time
+                    hold_minutes = int(hold_duration.total_seconds() / 60)
+
+                # Log trade to journal
+                log_trade('EXIT', symbol, shares, current_price, pnl=pnl, hold_minutes=hold_minutes)
+
                 # Remove from tracking
                 if symbol in self.positions:
                     del self.positions[symbol]
@@ -868,7 +914,8 @@ class ConnorsBot:
                         'entry_price': fill_price,
                         'stop_loss': actual_stop_loss,
                         'shares': shares,
-                        'stop_order_id': stop_order_id
+                        'stop_order_id': stop_order_id,
+                        'entry_time': datetime.now(ET)
                     }
 
                     self.logger.info(
@@ -885,13 +932,17 @@ class ConnorsBot:
                         'entry_price': fill_price,
                         'stop_loss': theoretical_stop_loss,  # For tracking only
                         'shares': shares,
-                        'stop_order_id': None  # No stop order in classic mode
+                        'stop_order_id': None,  # No stop order in classic mode
+                        'entry_time': datetime.now(ET)
                     }
 
                     self.logger.info(
                         f"ENTRY SUCCESS (CLASSIC): {symbol} - {shares} shares @ ${fill_price:.2f}, "
                         f"no stop (order_id={order_id})"
                     )
+
+                # Log trade to journal
+                log_trade('ENTRY', symbol, shares, fill_price, crsi=crsi)
 
                 # Log fill details if fill price differs from expected
                 if abs(fill_price - entry_price) > 0.01:
@@ -992,6 +1043,16 @@ class ConnorsBot:
 
                     # Execute close position (automatically cancels stop orders)
                     if self.alpaca.close_position(symbol):
+                        # Calculate hold duration
+                        hold_minutes = 0
+                        if symbol in self.positions and 'entry_time' in self.positions[symbol]:
+                            entry_time = self.positions[symbol]['entry_time']
+                            hold_duration = datetime.now(ET) - entry_time
+                            hold_minutes = int(hold_duration.total_seconds() / 60)
+
+                        # Log trade to journal
+                        log_trade('EXIT', symbol, shares, current_price, pnl=pnl, hold_minutes=hold_minutes)
+
                         # Remove from tracking
                         if symbol in self.positions:
                             del self.positions[symbol]
