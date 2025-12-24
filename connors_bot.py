@@ -26,7 +26,8 @@ from blessed import Terminal
 from config import (
     CAPITAL,
     POSITION_SIZE_PCT,
-    MAX_POSITIONS,
+    MAX_POSITIONS_SAFE,
+    MAX_POSITIONS_CLASSIC,
     STOP_LOSS_PCT,
     ENTRY_RSI,
     ENTRY_CRSI,
@@ -205,6 +206,7 @@ class ConnorsBot:
         self.db = IndicatorsDB()
         self.alpaca = AlpacaClient(paper=paper)
         self.mode = mode
+        self.max_positions = MAX_POSITIONS_SAFE if mode == TradingMode.SAFE else MAX_POSITIONS_CLASSIC
         self.positions: Dict[str, Dict] = {}
         self.cycle_count = 0
         self.running = False
@@ -578,11 +580,11 @@ class ConnorsBot:
         self.logger.debug("Searching for entry candidates...")
 
         # Calculate available slots
-        available_slots = MAX_POSITIONS - len(self.positions)
+        available_slots = self.max_positions - len(self.positions)
 
         if available_slots <= 0:
             self.logger.info(
-                f"No available slots for new positions (current: {len(self.positions)}/{MAX_POSITIONS})"
+                f"No available slots for new positions (current: {len(self.positions)}/{self.max_positions})"
             )
             return []
 
@@ -921,7 +923,7 @@ class ConnorsBot:
         self.logger.info("CYCLE SUMMARY")
         self.logger.info("-" * 70)
         self.logger.info(f"Account Equity:  ${current_equity:,.2f}")
-        self.logger.info(f"Open Positions:  {len(self.positions)}/{MAX_POSITIONS}")
+        self.logger.info(f"Open Positions:  {len(self.positions)}/{self.max_positions}")
         self.logger.info(f"Entries:         {entries_executed}")
         self.logger.info(f"Exits:           {exits_executed}")
         self.logger.info(f"Cycle P&L:       ${total_pnl:+,.2f}")
@@ -945,7 +947,7 @@ class ConnorsBot:
         self.logger.info(f"Mode: {self.mode.value.upper()}")
         self.logger.info(f"Strategy: Entry CRSI <= {ENTRY_CRSI}, Exit Close > SMA5")
         self.logger.info(f"Position Size: {POSITION_SIZE_PCT*100:.0f}% per position")
-        self.logger.info(f"Max Positions: {MAX_POSITIONS}")
+        self.logger.info(f"Max Positions: {self.max_positions}")
         if self.mode == TradingMode.SAFE:
             self.logger.info(f"Stop Loss: {STOP_LOSS_PCT*100:.0f}% (bracket orders)")
         else:

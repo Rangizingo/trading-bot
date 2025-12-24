@@ -84,7 +84,9 @@ if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
 # Capital allocation
 CAPITAL = 100000
 POSITION_SIZE_PCT = 0.10  # 10% per position
-MAX_POSITIONS = 5
+MAX_POSITIONS = 5  # Default fallback
+MAX_POSITIONS_SAFE = 10  # More positions allowed with stop protection
+MAX_POSITIONS_CLASSIC = 7  # Fewer positions without stops (higher risk per position)
 
 # Risk management
 STOP_LOSS_PCT = 0.03  # 3% stop loss
