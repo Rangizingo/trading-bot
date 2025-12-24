@@ -682,13 +682,11 @@ class AlpacaClient:
         """
         try:
             # Get all open orders
-            filter_params = {
-                "status": QueryOrderStatus.OPEN
-            }
-            if symbol:
-                filter_params["symbols"] = [symbol]
-
-            orders = self.client.get_orders(filter=filter_params)
+            request = GetOrdersRequest(
+                status=QueryOrderStatus.OPEN,
+                symbols=[symbol] if symbol else None
+            )
+            orders = self.client.get_orders(filter=request)
 
             result = []
             for order in orders:

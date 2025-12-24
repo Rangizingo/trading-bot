@@ -965,49 +965,55 @@ class ConnorsBot:
 
         # Auto-exit any invalid positions
         if invalid_positions:
-            self.logger.info("")
-            self.logger.info("=" * 70)
-            self.logger.info("AUTO-EXITING INVALID POSITIONS")
-            self.logger.info("=" * 70)
-
-            for invalid_pos in invalid_positions:
-                symbol = invalid_pos['symbol']
-                shares = invalid_pos['shares']
-                current_price = invalid_pos['current_price']
-                reason = invalid_pos['reason']
-                pnl = invalid_pos['pnl']
-
-                self.logger.info(
-                    f"Closing {symbol}: {shares} shares @ ${current_price:.2f} "
-                    f"(reason={reason}, P&L=${pnl:+.2f})"
+            if not self.is_market_hours():
+                self.logger.warning(
+                    f"Market closed - skipping {len(invalid_positions)} auto-exit(s). "
+                    f"Will retry when market opens."
                 )
+            else:
+                self.logger.info("")
+                self.logger.info("=" * 70)
+                self.logger.info("AUTO-EXITING INVALID POSITIONS")
+                self.logger.info("=" * 70)
 
-                # Execute close position (automatically cancels stop orders)
-                if self.alpaca.close_position(symbol):
-                    # Remove from tracking
-                    if symbol in self.positions:
-                        del self.positions[symbol]
+                for invalid_pos in invalid_positions:
+                    symbol = invalid_pos['symbol']
+                    shares = invalid_pos['shares']
+                    current_price = invalid_pos['current_price']
+                    reason = invalid_pos['reason']
+                    pnl = invalid_pos['pnl']
 
                     self.logger.info(
-                        f"EXIT SUCCESS: {symbol} - {shares} shares closed @ ${current_price:.2f}, "
-                        f"P&L=${pnl:+.2f}"
-                    )
-                else:
-                    self.logger.error(
-                        f"EXIT FAILED: {symbol} - Position close rejected. "
-                        f"Check broker status and position availability."
+                        f"Closing {symbol}: {shares} shares @ ${current_price:.2f} "
+                        f"(reason={reason}, P&L=${pnl:+.2f})"
                     )
 
-            self.logger.info("=" * 70)
-            self.logger.info(f"Auto-exit complete: {len(invalid_positions)} positions closed")
-            self.logger.info("=" * 70)
+                    # Execute close position (automatically cancels stop orders)
+                    if self.alpaca.close_position(symbol):
+                        # Remove from tracking
+                        if symbol in self.positions:
+                            del self.positions[symbol]
 
-            # Wait for Alpaca to process the close orders before continuing
-            self.logger.info("Waiting 5 seconds for orders to settle...")
-            time.sleep(5)
+                        self.logger.info(
+                            f"EXIT SUCCESS: {symbol} - {shares} shares closed @ ${current_price:.2f}, "
+                            f"P&L=${pnl:+.2f}"
+                        )
+                    else:
+                        self.logger.error(
+                            f"EXIT FAILED: {symbol} - Position close rejected. "
+                            f"Check broker status and position availability."
+                        )
 
-            # Re-sync positions to get accurate state after auto-exits
-            self.sync_positions()
+                self.logger.info("=" * 70)
+                self.logger.info(f"Auto-exit complete: {len(invalid_positions)} positions closed")
+                self.logger.info("=" * 70)
+
+                # Wait for Alpaca to process the close orders before continuing
+                self.logger.info("Waiting 5 seconds for orders to settle...")
+                time.sleep(5)
+
+                # Re-sync positions to get accurate state after auto-exits
+                self.sync_positions()
 
         # Wait for market to open
         while not self.is_market_hours():
