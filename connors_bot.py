@@ -397,6 +397,64 @@ class ConnorsBot:
         except Exception as e:
             self.logger.error(f"Error syncing positions: {e}")
 
+    def reconcile_positions(self) -> None:
+        """
+        Reconcile existing positions with selected trading mode.
+
+        SAFE mode: Ensure all positions have stop orders (create if missing)
+        CLASSIC mode: Cancel any existing stop orders (not needed)
+
+        Called after sync_positions() on startup to align orders with mode.
+        """
+        self.logger.info("")
+        self.logger.info("=" * 70)
+        self.logger.info("RECONCILING POSITIONS WITH TRADING MODE")
+        self.logger.info("=" * 70)
+
+        for symbol, pos_data in self.positions.items():
+            # Check for existing stop orders for this symbol
+            existing_orders = self.alpaca.get_open_orders(symbol)
+            has_stop = any(order['type'] == 'stop' and order['side'] == 'sell' for order in existing_orders)
+
+            if self.mode == TradingMode.SAFE:
+                if has_stop:
+                    self.logger.info(f"{symbol}: Stop order exists - OK")
+                    # Update tracking with the stop order ID if we don't have it
+                    if pos_data.get('stop_order_id') is None:
+                        for order in existing_orders:
+                            if order['type'] == 'stop' and order['side'] == 'sell':
+                                pos_data['stop_order_id'] = order['id']
+                                pos_data['stop_loss'] = order['stop_price']
+                                self.logger.info(f"  Tracking existing stop: ${order['stop_price']:.2f}")
+                                break
+                else:
+                    # Need to create a stop order
+                    shares = pos_data['shares']
+                    stop_price = pos_data['stop_loss']
+                    self.logger.info(f"{symbol}: No stop order - creating one @ ${stop_price:.2f}")
+
+                    stop_order_id = self.alpaca.submit_stop_order(symbol, shares, stop_price)
+                    if stop_order_id:
+                        pos_data['stop_order_id'] = stop_order_id
+                        self.logger.info(f"  Stop order created: {stop_order_id}")
+                    else:
+                        self.logger.warning(f"  Failed to create stop order for {symbol}")
+
+            else:  # CLASSIC mode
+                if has_stop:
+                    self.logger.info(f"{symbol}: Stop order exists - cancelling (classic mode)")
+                    cancelled = self.alpaca.cancel_orders_for_symbol(symbol)
+                    if cancelled > 0:
+                        pos_data['stop_order_id'] = None
+                        self.logger.info(f"  Cancelled {cancelled} order(s)")
+                else:
+                    self.logger.info(f"{symbol}: No stop order - OK (classic mode)")
+                    pos_data['stop_order_id'] = None
+
+        self.logger.info("=" * 70)
+        self.logger.info(f"Reconciliation complete - all positions aligned with {self.mode.value.upper()} mode")
+        self.logger.info("=" * 70)
+
     def validate_positions(self) -> List[Dict]:
         """
         Validate existing positions against exit conditions on startup.
@@ -902,6 +960,7 @@ class ConnorsBot:
 
         # Sync positions and validate them
         self.sync_positions()
+        self.reconcile_positions()
         invalid_positions = self.validate_positions()
 
         # Auto-exit any invalid positions

@@ -414,6 +414,45 @@ class AlpacaClient:
             logger.error(f"Unexpected error submitting simple order for {symbol}: {e}")
             return None
 
+    def submit_stop_order(self, symbol: str, qty: int, stop_price: float) -> Optional[str]:
+        """
+        Submit a stop loss sell order for an existing position.
+
+        Used to add stop loss protection to positions that don't have one
+        (e.g., when switching from Classic to Safe mode).
+
+        Args:
+            symbol: Stock symbol to create stop for.
+            qty: Number of shares (should match position size).
+            stop_price: Price at which to trigger the stop sell.
+
+        Returns:
+            Stop order ID on success, None on failure.
+        """
+        try:
+            logger.info(f"Creating stop order for {symbol}: {qty} shares @ ${stop_price:.2f}")
+
+            stop_request = StopOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.SELL,
+                type=OrderType.STOP,
+                stop_price=round(stop_price, 2),
+                time_in_force=TimeInForce.GTC
+            )
+
+            stop_order = self.client.submit_order(stop_request)
+            logger.info(f"Stop order created for {symbol}: order_id={stop_order.id}, stop_price=${stop_price:.2f}")
+
+            return str(stop_order.id)
+
+        except APIError as e:
+            logger.error(f"Failed to create stop order for {symbol}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error creating stop order for {symbol}: {e}")
+            return None
+
     def submit_bracket_order(self, symbol: str, qty: int, stop_loss_pct: float) -> Optional[Dict]:
         """
         Submit a bracket order that includes buy + stop loss.
