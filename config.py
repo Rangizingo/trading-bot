@@ -12,10 +12,46 @@ import os
 from pathlib import Path
 from datetime import time
 from zoneinfo import ZoneInfo
+from enum import Enum
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv(dotenv_path="C:/Users/User/Documents/AI/VV7/.env")
+
+# =============================================================================
+# Trading Mode Configuration
+# =============================================================================
+
+class TradingMode(Enum):
+    """Trading mode selection for entry and exit behavior."""
+    SAFE = "safe"
+    CLASSIC = "classic"
+
+
+MODE_INFO = {
+    TradingMode.SAFE: {
+        "name": "SAFE MODE",
+        "subtitle": "Recommended for beginners",
+        "features": [
+            ("Entry", "Bracket order (BUY + STOP)"),
+            ("Stop Loss", "3% below entry"),
+            ("Exit", "Price > SMA5 OR stop triggered"),
+            ("Max Loss", "3% per position"),
+            ("Risk", "Lower (capped losses)"),
+        ]
+    },
+    TradingMode.CLASSIC: {
+        "name": "CLASSIC MODE",
+        "subtitle": "Larry Connors original",
+        "features": [
+            ("Entry", "Simple BUY order"),
+            ("Stop Loss", "None"),
+            ("Exit", "Price > SMA5 only"),
+            ("Max Loss", "Unlimited (ride the dip)"),
+            ("Risk", "Higher (but 75% win rate historically)"),
+        ]
+    }
+}
 
 # =============================================================================
 # Database Configuration

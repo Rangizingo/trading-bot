@@ -21,6 +21,8 @@ from datetime import datetime
 from typing import Dict, List, Optional
 from pathlib import Path
 
+from blessed import Terminal
+
 from config import (
     CAPITAL,
     POSITION_SIZE_PCT,
@@ -35,7 +37,9 @@ from config import (
     CYCLE_INTERVAL_MINUTES,
     ET,
     LOG_DIR,
-    SYNC_COMPLETE_FILE
+    SYNC_COMPLETE_FILE,
+    TradingMode,
+    MODE_INFO
 )
 from data.indicators_db import IndicatorsDB
 from execution.alpaca_client import AlpacaClient
@@ -67,6 +71,108 @@ NYSE_HOLIDAYS_2024_2025 = {
 }
 
 
+def render_mode_menu(term: Terminal, selected_index: int) -> None:
+    """
+    Render the mode selection box with highlighting.
+
+    Displays both trading modes with their features in a formatted box.
+    The selected mode is highlighted with a '>' prefix and bold/green styling.
+
+    Args:
+        term: Blessed Terminal instance
+        selected_index: Index of currently selected mode (0=SAFE, 1=CLASSIC)
+    """
+    modes = [TradingMode.SAFE, TradingMode.CLASSIC]
+
+    print(term.clear())
+    print("=" * 70)
+    print("                    SELECT TRADING MODE")
+    print("=" * 70)
+    print()
+    print("  " + "\u250c" + "\u2500" * 65 + "\u2510")
+    print("  \u2502" + " " * 65 + "\u2502")
+
+    for idx, mode in enumerate(modes):
+        mode_data = MODE_INFO[mode]
+        is_selected = (idx == selected_index)
+
+        # Mode header with selection indicator
+        selector = ">" if is_selected else " "
+        mode_header_text = f"   {selector} {mode_data['name']} ({mode_data['subtitle']})"
+
+        if is_selected:
+            # Calculate padding needed (total width 65 - actual text length)
+            # We need to account for ANSI escape sequences not contributing to visible width
+            plain_text_len = len(mode_header_text)
+            padding = 65 - plain_text_len
+            print(f"  \u2502 {term.bold_green(mode_header_text)}{' ' * padding}\u2502")
+        else:
+            print(f"  \u2502 {mode_header_text:<65}\u2502")
+
+        # Features
+        for i, (feature_name, feature_value) in enumerate(mode_data['features']):
+            if i == 0:
+                prefix = "\u251c\u2500"
+            elif i == len(mode_data['features']) - 1:
+                prefix = "\u2514\u2500"
+            else:
+                prefix = "\u251c\u2500"
+
+            feature_text = f"     {prefix} {feature_name}: {feature_value}"
+
+            if is_selected:
+                # Calculate padding for colored text
+                plain_text_len = len(feature_text)
+                padding = 65 - plain_text_len
+                print(f"  \u2502 {term.green(feature_text)}{' ' * padding}\u2502")
+            else:
+                print(f"  \u2502 {feature_text:<65}\u2502")
+
+        print("  \u2502" + " " * 65 + "\u2502")
+
+    print("  " + "\u2514" + "\u2500" * 65 + "\u2518")
+    print()
+    print("        \u2191/\u2193 to select    ENTER to confirm    ESC to quit")
+    print()
+    print("=" * 70)
+
+
+def select_trading_mode() -> TradingMode:
+    """
+    Interactive mode selector with arrow keys.
+
+    Displays a formatted menu allowing the user to choose between SAFE and CLASSIC
+    trading modes using arrow key navigation. Returns the selected mode when user
+    presses ENTER, or exits the program if ESC is pressed.
+
+    Returns:
+        Selected TradingMode enum value
+    """
+    term = Terminal()
+    modes = [TradingMode.SAFE, TradingMode.CLASSIC]
+    selected_index = 0  # Default to SAFE mode
+
+    with term.cbreak():
+        while True:
+            render_mode_menu(term, selected_index)
+
+            key = term.inkey()
+
+            if key.name == 'KEY_UP':
+                selected_index = max(0, selected_index - 1)
+            elif key.name == 'KEY_DOWN':
+                selected_index = min(len(modes) - 1, selected_index + 1)
+            elif key.name == 'KEY_ENTER' or key == '\n' or key == '\r':
+                # Clear screen and return selection
+                print(term.clear())
+                return modes[selected_index]
+            elif key.name == 'KEY_ESCAPE' or key == '\x1b':
+                # ESC pressed - exit program
+                print(term.clear())
+                print("Exiting...")
+                sys.exit(0)
+
+
 class ConnorsBot:
     """
     Main trading bot orchestrator for Connors RSI strategy.
@@ -77,6 +183,7 @@ class ConnorsBot:
     Attributes:
         db: IndicatorsDB instance for technical indicator access
         alpaca: AlpacaClient instance for trade execution
+        mode: Trading mode (SAFE or CLASSIC)
         positions: Dict tracking open positions with entry prices, stop losses, and stop order IDs
                   Format: {symbol: {'entry_price': float, 'stop_loss': float,
                                     'shares': int, 'stop_order_id': str|None}}
@@ -85,23 +192,26 @@ class ConnorsBot:
         logger: Logger instance for bot activity tracking
     """
 
-    def __init__(self, paper: bool = True) -> None:
+    def __init__(self, paper: bool = True, mode: TradingMode = TradingMode.SAFE) -> None:
         """
         Initialize ConnorsBot with database and broker connections.
 
         Args:
             paper: If True, use paper trading environment. If False, use live trading.
+            mode: Trading mode (SAFE or CLASSIC). SAFE uses bracket orders with stops,
+                  CLASSIC uses simple orders without stops.
         """
         # Initialize components
         self.db = IndicatorsDB()
         self.alpaca = AlpacaClient(paper=paper)
+        self.mode = mode
         self.positions: Dict[str, Dict] = {}
         self.cycle_count = 0
         self.running = False
 
         # Set up logging
         self.logger = self._setup_logging()
-        self.logger.info(f"ConnorsBot initialized (paper={paper})")
+        self.logger.info(f"ConnorsBot initialized (paper={paper}, mode={mode.value.upper()})")
 
     def _setup_logging(self) -> logging.Logger:
         """
@@ -336,22 +446,30 @@ class ConnorsBot:
             # Calculate P&L
             pnl = (current_price - entry_price) * shares
 
-            # Check exit conditions (true Connors: stop + SMA5 only)
+            # Check exit conditions based on trading mode
             exit_reason = None
 
-            # 1. Stop loss hit (highest priority - risk management)
-            if current_price <= stop_loss:
-                exit_reason = "stop_hit"
-                self.logger.info(
-                    f"{symbol}: EXIT - Stop hit (Price=${current_price:.2f} <= Stop=${stop_loss:.2f})"
-                )
-
-            # 2. SMA5 exit - mean reversion complete
-            elif current_price > sma5:
-                exit_reason = "sma5_exit"
-                self.logger.info(
-                    f"{symbol}: EXIT - SMA5 (Price=${current_price:.2f} > SMA5=${sma5:.2f})"
-                )
+            if self.mode == TradingMode.SAFE:
+                # SAFE mode: Check both stop loss and SMA5 exit
+                # 1. Stop loss hit (highest priority - risk management)
+                if current_price <= stop_loss:
+                    exit_reason = "stop_hit"
+                    self.logger.info(
+                        f"{symbol}: EXIT - Stop hit (Price=${current_price:.2f} <= Stop=${stop_loss:.2f})"
+                    )
+                # 2. SMA5 exit - mean reversion complete
+                elif current_price > sma5:
+                    exit_reason = "sma5_exit"
+                    self.logger.info(
+                        f"{symbol}: EXIT - SMA5 (Price=${current_price:.2f} > SMA5=${sma5:.2f})"
+                    )
+            else:
+                # CLASSIC mode: Only check SMA5 exit (no stop loss)
+                if current_price > sma5:
+                    exit_reason = "sma5_exit"
+                    self.logger.info(
+                        f"{symbol}: EXIT - SMA5 (Price=${current_price:.2f} > SMA5=${sma5:.2f})"
+                    )
 
             # Build invalid position signal if any condition met
             if exit_reason:
@@ -537,22 +655,30 @@ class ConnorsBot:
             # Calculate P&L
             pnl = (current_price - entry_price) * shares
 
-            # Check exit conditions in priority order (true Connors: stop + SMA5 only)
+            # Check exit conditions based on trading mode
             exit_reason = None
 
-            # 1. Stop loss hit (HIGHEST PRIORITY - capital protection)
-            if current_price <= stop_loss:
-                exit_reason = "risk"
-                self.logger.info(
-                    f"Exit signal (stop): {symbol} - Price=${current_price:.2f} <= Stop=${stop_loss:.2f}"
-                )
-
-            # 2. SMA5 exit - price above short-term average (mean reversion complete)
-            elif current_price > sma5:
-                exit_reason = "trend"
-                self.logger.info(
-                    f"Exit signal (SMA5): {symbol} - Price=${current_price:.2f} > SMA5=${sma5:.2f}"
-                )
+            if self.mode == TradingMode.SAFE:
+                # SAFE mode: Check both stop loss and SMA5 exit
+                # 1. Stop loss hit (HIGHEST PRIORITY - capital protection)
+                if current_price <= stop_loss:
+                    exit_reason = "risk"
+                    self.logger.info(
+                        f"Exit signal (stop): {symbol} - Price=${current_price:.2f} <= Stop=${stop_loss:.2f}"
+                    )
+                # 2. SMA5 exit - price above short-term average (mean reversion complete)
+                elif current_price > sma5:
+                    exit_reason = "trend"
+                    self.logger.info(
+                        f"Exit signal (SMA5): {symbol} - Price=${current_price:.2f} > SMA5=${sma5:.2f}"
+                    )
+            else:
+                # CLASSIC mode: Only check SMA5 exit (no stop loss)
+                if current_price > sma5:
+                    exit_reason = "trend"
+                    self.logger.info(
+                        f"Exit signal (SMA5): {symbol} - Price=${current_price:.2f} > SMA5=${sma5:.2f}"
+                    )
 
             # Build exit signal if any condition met
             if exit_reason:
@@ -655,33 +781,57 @@ class ConnorsBot:
             if cancelled > 0:
                 self.logger.info(f"Cleaned up {cancelled} orphaned order(s) for {symbol}")
 
-            # Execute bracket order - pass stop loss PERCENTAGE, not price
-            # Stop price will be calculated from ACTUAL fill price inside bracket order
-            result = self.alpaca.submit_bracket_order(symbol, shares, STOP_LOSS_PCT)
+            # Execute order based on trading mode
+            if self.mode == TradingMode.SAFE:
+                # SAFE mode: Bracket order with stop loss protection
+                # Pass stop loss PERCENTAGE, not price
+                # Stop price will be calculated from ACTUAL fill price inside bracket order
+                result = self.alpaca.submit_bracket_order(symbol, shares, STOP_LOSS_PCT)
+            else:
+                # CLASSIC mode: Simple market order without stop loss
+                result = self.alpaca.submit_simple_order(symbol, shares)
 
             if result:
                 entries_executed += 1
 
-                # Extract order ID and stop order ID
-                order_id = result.get('order_id')
-                stop_order_id = result.get('stop_order_id')
-
-                # Use ACTUAL fill price and stop price from bracket order result
+                # Extract fill details
                 fill_price = result.get('fill_price', entry_price)
-                actual_stop_loss = result.get('stop_price', fill_price * (1 - STOP_LOSS_PCT))
+                order_id = result.get('order_id')
 
-                # Add to position tracking with ACTUAL values
-                self.positions[symbol] = {
-                    'entry_price': fill_price,
-                    'stop_loss': actual_stop_loss,
-                    'shares': shares,
-                    'stop_order_id': stop_order_id
-                }
+                if self.mode == TradingMode.SAFE:
+                    # SAFE mode: track stop order and stop loss price
+                    stop_order_id = result.get('stop_order_id')
+                    actual_stop_loss = result.get('stop_price', fill_price * (1 - STOP_LOSS_PCT))
 
-                self.logger.info(
-                    f"ENTRY SUCCESS: {symbol} - {shares} shares @ ${fill_price:.2f}, "
-                    f"stop @ ${actual_stop_loss:.2f} (order_id={order_id}, stop_order_id={stop_order_id})"
-                )
+                    # Add to position tracking with stop information
+                    self.positions[symbol] = {
+                        'entry_price': fill_price,
+                        'stop_loss': actual_stop_loss,
+                        'shares': shares,
+                        'stop_order_id': stop_order_id
+                    }
+
+                    self.logger.info(
+                        f"ENTRY SUCCESS (SAFE): {symbol} - {shares} shares @ ${fill_price:.2f}, "
+                        f"stop @ ${actual_stop_loss:.2f} (order_id={order_id}, stop_order_id={stop_order_id})"
+                    )
+                else:
+                    # CLASSIC mode: no stop order, set stop_order_id to None
+                    # Calculate a theoretical stop_loss for tracking purposes (not used for actual trading)
+                    theoretical_stop_loss = fill_price * (1 - STOP_LOSS_PCT)
+
+                    # Add to position tracking without stop order
+                    self.positions[symbol] = {
+                        'entry_price': fill_price,
+                        'stop_loss': theoretical_stop_loss,  # For tracking only
+                        'shares': shares,
+                        'stop_order_id': None  # No stop order in classic mode
+                    }
+
+                    self.logger.info(
+                        f"ENTRY SUCCESS (CLASSIC): {symbol} - {shares} shares @ ${fill_price:.2f}, "
+                        f"no stop (order_id={order_id})"
+                    )
 
                 # Log fill details if fill price differs from expected
                 if abs(fill_price - entry_price) > 0.01:
@@ -690,8 +840,9 @@ class ConnorsBot:
                         f"(diff=${fill_price - entry_price:+.2f})"
                     )
             else:
+                order_type = "Bracket" if self.mode == TradingMode.SAFE else "Simple"
                 self.logger.error(
-                    f"ENTRY FAILED: {symbol} - Bracket order rejected. "
+                    f"ENTRY FAILED: {symbol} - {order_type} order rejected. "
                     f"Check account buying power and order limits."
                 )
 
@@ -733,10 +884,14 @@ class ConnorsBot:
         self.logger.info("CONNORS RSI TRADING BOT")
         self.logger.info("=" * 70)
         self.logger.info(f"Started: {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        self.logger.info(f"Mode: {self.mode.value.upper()}")
         self.logger.info(f"Strategy: Entry CRSI <= {ENTRY_CRSI}, Exit Close > SMA5")
         self.logger.info(f"Position Size: {POSITION_SIZE_PCT*100:.0f}% per position")
         self.logger.info(f"Max Positions: {MAX_POSITIONS}")
-        self.logger.info(f"Stop Loss: {STOP_LOSS_PCT*100:.0f}%")
+        if self.mode == TradingMode.SAFE:
+            self.logger.info(f"Stop Loss: {STOP_LOSS_PCT*100:.0f}% (bracket orders)")
+        else:
+            self.logger.info(f"Stop Loss: None (classic mode - no stops)")
         self.logger.info(f"Cycle Interval: {CYCLE_INTERVAL_MINUTES} minutes")
         self.logger.info("=" * 70)
 
@@ -876,6 +1031,9 @@ class ConnorsBot:
 
 
 if __name__ == "__main__":
-    # Create and run bot in paper trading mode
-    bot = ConnorsBot(paper=True)
+    # Select trading mode interactively
+    mode = select_trading_mode()
+
+    # Create and run bot in paper trading mode with selected mode
+    bot = ConnorsBot(paper=True, mode=mode)
     bot.run()

@@ -312,6 +312,108 @@ class AlpacaClient:
             logger.error(f"Unexpected error closing position for {symbol}: {e}")
             return False
 
+    def submit_simple_order(self, symbol: str, qty: int) -> Optional[Dict]:
+        """
+        Submit a simple market buy order without stop loss (Classic Mode).
+
+        This submits a market buy order and waits for it to fill.
+        No stop loss order is created.
+
+        Args:
+            symbol: Stock symbol to buy.
+            qty: Number of shares to buy.
+
+        Returns:
+            Dictionary with order details if successful:
+                - order_id: Buy order ID (str)
+                - fill_price: Actual fill price from buy order (float)
+                - symbol: Stock symbol (str)
+                - qty: Number of shares actually filled (int)
+            Returns None if order fails.
+        """
+        try:
+            # Ensure qty is integer
+            qty = int(qty)
+
+            # Cancel any existing orders for this symbol to prevent wash trade errors
+            self.cancel_orders_for_symbol(symbol)
+
+            # Submit the market buy order with GTC
+            buy_order_data = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=OrderSide.BUY,
+                time_in_force=TimeInForce.GTC
+            )
+            buy_order = self.client.submit_order(buy_order_data)
+
+            logger.info(
+                f"Simple order - Buy order submitted: {symbol} x {qty}, "
+                f"order_id={buy_order.id}, status={buy_order.status}"
+            )
+
+            # Poll for fill status (up to 60 seconds, checking every 0.5 seconds)
+            max_wait_time = 60.0  # seconds
+            poll_interval = 0.5  # seconds
+            elapsed_time = 0.0
+            filled_order = None
+
+            while elapsed_time < max_wait_time:
+                # Get current order status
+                current_order = self.client.get_order_by_id(buy_order.id)
+
+                if current_order.status.value in ['filled', 'partially_filled']:
+                    filled_order = current_order
+                    logger.info(
+                        f"Simple order - Buy order filled: {symbol} x {current_order.filled_qty} "
+                        f"@ ${float(current_order.filled_avg_price):.2f}"
+                    )
+                    break
+                elif current_order.status.value in ['cancelled', 'expired', 'rejected']:
+                    logger.error(
+                        f"Simple order - Buy order {current_order.status.value}: {symbol}, "
+                        f"order_id={buy_order.id}"
+                    )
+                    return None
+
+                # Wait before next poll
+                time.sleep(poll_interval)
+                elapsed_time += poll_interval
+
+            # Check if we got a fill
+            if filled_order is None:
+                logger.error(
+                    f"Simple order - Buy order did not fill within {max_wait_time}s: "
+                    f"{symbol}, order_id={buy_order.id}"
+                )
+                # Attempt to cancel the unfilled order
+                self.cancel_order(buy_order.id)
+                return None
+
+            # Get actual fill price and quantity
+            actual_fill_price = float(filled_order.filled_avg_price)
+            actual_qty = int(filled_order.filled_qty)
+
+            logger.info(
+                f"Simple order completed: {symbol} x {actual_qty} @ ${actual_fill_price:.2f}"
+            )
+
+            result = {
+                "order_id": filled_order.id,
+                "fill_price": actual_fill_price,
+                "symbol": symbol,
+                "qty": actual_qty
+            }
+
+            return result
+
+        except APIError as e:
+            logger.error(f"Failed to submit simple order for {symbol} x {qty}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error submitting simple order for {symbol}: {e}")
+            return None
+
     def submit_bracket_order(self, symbol: str, qty: int, stop_loss_pct: float) -> Optional[Dict]:
         """
         Submit a bracket order that includes buy + stop loss.
