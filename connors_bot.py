@@ -649,6 +649,12 @@ class ConnorsBot:
                 f"with {STOP_LOSS_PCT*100:.1f}% stop (CRSI={crsi:.2f}, RSI={rsi:.2f})"
             )
 
+            # Defensive cleanup: cancel any orphaned orders for this symbol
+            # This prevents wash trade rejections from leftover stop orders
+            cancelled = self.alpaca.cancel_orders_for_symbol(symbol)
+            if cancelled > 0:
+                self.logger.info(f"Cleaned up {cancelled} orphaned order(s) for {symbol}")
+
             # Execute bracket order - pass stop loss PERCENTAGE, not price
             # Stop price will be calculated from ACTUAL fill price inside bracket order
             result = self.alpaca.submit_bracket_order(symbol, shares, STOP_LOSS_PCT)
