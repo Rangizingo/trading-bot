@@ -540,6 +540,15 @@ class AlpacaClient:
             actual_fill_price = float(filled_order.filled_avg_price)
             actual_qty = int(filled_order.filled_qty)
 
+            # Handle partial fills - cancel unfilled portion to prevent unprotected shares
+            if filled_order.status.value == 'partially_filled':
+                unfilled_qty = qty - actual_qty
+                logger.warning(
+                    f"Bracket order - PARTIAL FILL detected: {symbol} got {actual_qty}/{qty} shares. "
+                    f"Canceling unfilled {unfilled_qty} shares to prevent unprotected position."
+                )
+                self.cancel_order(filled_order.id)
+
             # Calculate stop price from ACTUAL fill price (not expected price)
             stop_price = round(actual_fill_price * (1 - stop_loss_pct), 2)
 
