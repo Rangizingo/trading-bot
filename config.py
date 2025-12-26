@@ -67,14 +67,29 @@ SYNC_COMPLETE_FILE = os.path.expandvars(r"%LOCALAPPDATA%\VV7SimpleBridge\sync_co
 # Alpaca API Credentials
 # =============================================================================
 
+# Legacy credentials (kept for backward compatibility)
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 
-# Validate credentials are loaded
-if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+# CRSI-SAFE account (bracket orders with stop losses)
+ALPACA_SAFE_API_KEY = os.environ.get("ALPACA_SAFE_API_KEY", "")
+ALPACA_SAFE_SECRET_KEY = os.environ.get("ALPACA_SAFE_SECRET_KEY", "")
+
+# CRSI-CLASSIC account (simple orders, no stops)
+ALPACA_CLASSIC_API_KEY = os.environ.get("ALPACA_CLASSIC_API_KEY", "")
+ALPACA_CLASSIC_SECRET_KEY = os.environ.get("ALPACA_CLASSIC_SECRET_KEY", "")
+
+# Validate dual-account credentials are loaded
+if not ALPACA_SAFE_API_KEY or not ALPACA_SAFE_SECRET_KEY:
     raise ValueError(
-        "Alpaca credentials not found. Ensure ALPACA_API_KEY and ALPACA_SECRET_KEY "
-        "are set in environment variables or .env file."
+        "SAFE account credentials not found. Ensure ALPACA_SAFE_API_KEY and "
+        "ALPACA_SAFE_SECRET_KEY are set in environment variables or .env file."
+    )
+
+if not ALPACA_CLASSIC_API_KEY or not ALPACA_CLASSIC_SECRET_KEY:
+    raise ValueError(
+        "CLASSIC account credentials not found. Ensure ALPACA_CLASSIC_API_KEY and "
+        "ALPACA_CLASSIC_SECRET_KEY are set in environment variables or .env file."
     )
 
 # =============================================================================

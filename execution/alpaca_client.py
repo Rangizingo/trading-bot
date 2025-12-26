@@ -28,32 +28,40 @@ class AlpacaClient:
     All API errors are caught and logged, with graceful fallbacks.
     """
 
-    def __init__(self, paper: bool = True) -> None:
+    def __init__(self, paper: bool = True, api_key: str = None, secret_key: str = None, name: str = None) -> None:
         """
         Initialize Alpaca trading client.
 
         Args:
             paper: If True, use paper trading environment. If False, use live trading.
+            api_key: Optional API key. If not provided, uses ALPACA_API_KEY from config.
+            secret_key: Optional secret key. If not provided, uses ALPACA_SECRET_KEY from config.
+            name: Optional name for this client instance (for logging).
 
         Raises:
             ValueError: If API credentials are missing or invalid.
         """
-        if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+        # Use provided credentials or fall back to defaults
+        self.api_key = api_key or ALPACA_API_KEY
+        self.secret_key = secret_key or ALPACA_SECRET_KEY
+        self.name = name or "default"
+
+        if not self.api_key or not self.secret_key:
             raise ValueError(
                 "Alpaca API credentials are not configured. "
-                "Set ALPACA_API_KEY and ALPACA_SECRET_KEY in environment variables."
+                "Provide api_key/secret_key or set ALPACA_API_KEY and ALPACA_SECRET_KEY in environment variables."
             )
 
         try:
             self.client = TradingClient(
-                api_key=ALPACA_API_KEY,
-                secret_key=ALPACA_SECRET_KEY,
+                api_key=self.api_key,
+                secret_key=self.secret_key,
                 paper=paper
             )
             self.paper = paper
-            logger.info(f"Alpaca client initialized (paper={paper})")
+            logger.info(f"Alpaca client '{self.name}' initialized (paper={paper})")
         except Exception as e:
-            logger.error(f"Failed to initialize Alpaca client: {e}")
+            logger.error(f"Failed to initialize Alpaca client '{self.name}': {e}")
             raise
 
     def get_account(self) -> Dict:
