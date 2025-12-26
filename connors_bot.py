@@ -74,6 +74,25 @@ def log_trade(account: str, action: str, symbol: str, shares: int, price: float,
         logging.getLogger("ConnorsBot").warning(f"Failed to log trade: {e}")
 
 
+
+
+def get_session_pnl(account: str) -> float:
+    """Get cumulative P&L from today's trades in the CSV journal."""
+    try:
+        journal_file = LOG_DIR / f"trade_journal_{account.lower()}.csv"
+        if not journal_file.exists():
+            return 0.0
+        today = datetime.now(ET).strftime('%Y-%m-%d')
+        total_pnl = 0.0
+        with open(journal_file, mode='r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row['timestamp'].startswith(today) and row['action'] == 'EXIT':
+                    total_pnl += float(row['pnl'])
+        return total_pnl
+    except Exception:
+        return 0.0
+
 class ConnorsBot:
     """Main trading bot - DUAL ACCOUNT MODE. Runs SAFE and CLASSIC simultaneously."""
 
@@ -388,6 +407,8 @@ class ConnorsBot:
         except:
             classic_eq = 0
         dur = time.time() - cycle_start
+        safe_session_pnl = get_session_pnl("SAFE")
+        classic_session_pnl = get_session_pnl("CLASSIC")
         self.console_logger.info("")
         self.console_logger.info("-" * 70)
         self.console_logger.info("CYCLE SUMMARY")
@@ -396,6 +417,8 @@ class ConnorsBot:
         self.console_logger.info(f"{'-'*12} {'-'*12} {'-'*12} {'-'*10} {'-'*10} {'-'*12}")
         self.console_logger.info(f"{'SAFE':<12} ${safe_eq:>10,.2f} {len(self.safe_positions):>10}/{self.max_positions_safe} {safe_entries:>10} {safe_exits:>10} ${safe_pnl:>+10,.2f}")
         self.console_logger.info(f"{'CLASSIC':<12} ${classic_eq:>10,.2f} {len(self.classic_positions):>10}/{self.max_positions_classic} {classic_entries:>10} {classic_exits:>10} ${classic_pnl:>+10,.2f}")
+        self.console_logger.info("-" * 70)
+        self.console_logger.info(f"SESSION P&L:  SAFE ${safe_session_pnl:>+10,.2f}  |  CLASSIC ${classic_session_pnl:>+10,.2f}")
         self.console_logger.info("-" * 70)
         self.console_logger.info(f"Cycle Duration: {dur:.2f}s")
         self.safe_logger.info(f"Cycle #{self.cycle_count}: Eq=${safe_eq:,.2f}, Pos={len(self.safe_positions)}, E={safe_entries}, X={safe_exits}, P&L=${safe_pnl:+,.2f}")
