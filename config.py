@@ -28,6 +28,12 @@ class TradingMode(Enum):
     CLASSIC = "classic"
 
 
+class StrategyType(Enum):
+    """Trading strategy selection."""
+    CRSI = "crsi"       # Original ConnorsRSI (designed for daily timeframe)
+    ROC_HA = "roc_ha"   # ROC + Heikin Ashi (optimized for intraday)
+
+
 MODE_INFO = {
     TradingMode.SAFE: {
         "name": "SAFE MODE",
@@ -110,6 +116,10 @@ STOP_LOSS_PCT = 0.03  # 3% stop loss
 ENTRY_RSI = 10  # Enter when RSI drops below this level (65-75% win rate) - DEPRECATED, use ENTRY_CRSI
 ENTRY_CRSI = 10  # Enter when ConnorsRSI drops below this level (true Connors strategy)
 # EXIT: Close > SMA5 (true Connors exit - no RSI exit threshold)
+
+# RSI(2) strategy parameters (replaces CRSI)
+ENTRY_RSI2 = 15   # Enter when RSI(2) < 15 (oversold)
+EXIT_RSI2 = 70    # Exit when RSI(2) > 70 (overbought)
 
 # Stock filtering criteria
 MIN_VOLUME = 1000    # Minimum per-bar volume (filters out illiquid stocks like BBP)

@@ -47,6 +47,57 @@ def normalize_symbol(symbol: str) -> str:
     return symbol.replace('.', '').replace('-', '').replace('/', '')
 
 
+def calculate_heikin_ashi(
+    open_price: float,
+    high: float,
+    low: float,
+    close: float,
+    prev_ha_open: Optional[float] = None,
+    prev_ha_close: Optional[float] = None
+) -> Dict[str, float]:
+    """
+    Calculate Heikin Ashi bar from OHLC data.
+
+    Heikin Ashi candles smooth price action by averaging values,
+    making trends easier to identify. Each candle uses previous
+    HA values for continuity.
+
+    Args:
+        open_price: Current bar open price
+        high: Current bar high price
+        low: Current bar low price
+        close: Current bar close price
+        prev_ha_open: Previous Heikin Ashi open (None for first bar)
+        prev_ha_close: Previous Heikin Ashi close (None for first bar)
+
+    Returns:
+        Dict containing ha_open, ha_high, ha_low, ha_close
+
+    Example:
+        >>> ha = calculate_heikin_ashi(100.0, 105.0, 99.0, 103.0)
+        >>> print(f"HA Close: {ha['ha_close']:.2f}")
+        HA Close: 101.75
+        >>> ha2 = calculate_heikin_ashi(103.0, 108.0, 102.0, 107.0,
+        ...                             ha['ha_open'], ha['ha_close'])
+    """
+    ha_close = (open_price + high + low + close) / 4
+
+    if prev_ha_open is not None and prev_ha_close is not None:
+        ha_open = (prev_ha_open + prev_ha_close) / 2
+    else:
+        ha_open = (open_price + close) / 2
+
+    ha_high = max(high, ha_open, ha_close)
+    ha_low = min(low, ha_open, ha_close)
+
+    return {
+        'ha_open': ha_open,
+        'ha_high': ha_high,
+        'ha_low': ha_low,
+        'ha_close': ha_close
+    }
+
+
 class IndicatorsDB:
     """
     Interface to SQLite database containing pre-computed technical indicators.
@@ -258,6 +309,83 @@ class IndicatorsDB:
             logger.error(f"Failed to query entry candidates: {e}")
             return []
 
+
+    def get_rsi2_entry_candidates(
+        self,
+        max_rsi2: float = 15,
+        min_volume: int = 100000,
+        min_price: float = 5.0,
+        limit: int = 20
+    ) -> List[Dict]:
+        """
+        Find stocks matching entry criteria for RSI(2) strategy.
+
+        Entry conditions (all must be true):
+        - RSI(2) <= max_rsi2 (oversold on 2-period RSI)
+        - Close > SMA200 (in long-term uptrend)
+        - No close < sma5 requirement (removed from original CRSI strategy)
+
+        Screens with sufficient liquidity, ordered by most oversold first.
+
+        Args:
+            max_rsi2: Maximum RSI(2) value (default 15 for oversold)
+            min_volume: Minimum daily volume (default 100,000)
+            min_price: Minimum stock price (default $5.00)
+            limit: Maximum number of results to return (default 20)
+
+        Returns:
+            List of dicts containing: symbol, close, rsi2, sma5, sma200, atr, volume.
+            Sorted by RSI(2) ascending (most oversold first).
+
+        Example:
+            >>> db = IndicatorsDB()
+            >>> candidates = db.get_rsi2_entry_candidates(max_rsi2=15, limit=10)
+            >>> for stock in candidates:
+            ...     print(f"{stock['symbol']}: ${stock['close']:.2f}, RSI2={stock['rsi2']:.2f}")
+        """
+        query = """
+            SELECT
+                symbol,
+                close,
+                rsi2,
+                sma5,
+                sma200,
+                atr,
+                volume
+            FROM indicators
+            WHERE
+                rsi2 IS NOT NULL
+                AND sma200 IS NOT NULL
+                AND sma5 IS NOT NULL
+                AND close IS NOT NULL
+                AND volume IS NOT NULL
+                AND atr IS NOT NULL
+                AND rsi2 > 0
+                AND rsi2 <= ?
+                AND close > sma200
+                AND volume >= ?
+                AND close >= ?
+            ORDER BY rsi2 ASC
+            LIMIT ?
+        """
+
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute(query, (max_rsi2, min_volume, min_price, limit))
+                rows = cursor.fetchall()
+
+                results = [dict(row) for row in rows]
+                logger.info(
+                    f"Found {len(results)} RSI(2) entry candidates "
+                    f"(max_rsi2={max_rsi2}, min_volume={min_volume:,}, "
+                    f"min_price=${min_price:.2f})"
+                )
+                return results
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to query RSI(2) entry candidates: {e}")
+            return []
+
     def get_position_data(self, symbols: List[str]) -> Dict[str, Dict]:
         """
         Batch lookup of indicator data for multiple symbols.
@@ -270,7 +398,7 @@ class IndicatorsDB:
 
         Returns:
             Dict mapping ORIGINAL symbol -> indicator data dict containing:
-            close, rsi, sma5, sma200, atr. Symbols not found are omitted.
+            close, rsi, rsi2, sma5, sma200, atr. Symbols not found are omitted.
             Keys use original symbols (e.g., 'PBR.A') for Alpaca API compatibility.
 
         Example:
@@ -293,6 +421,7 @@ class IndicatorsDB:
                 symbol,
                 close,
                 rsi,
+                rsi2,
                 sma5,
                 sma200,
                 atr
@@ -428,3 +557,164 @@ class IndicatorsDB:
                 'latest_timestamp': None,
                 'symbol_count': 0
             }
+
+    def get_all_roc_values(self) -> Dict[str, float]:
+        """
+        Get ROC (Rate of Change) values for all symbols in the database.
+
+        ROC measures momentum by comparing current price to price N periods ago.
+        Useful for screening stocks by momentum across the entire universe.
+
+        Returns:
+            Dict mapping symbol -> ROC value. Symbols with NULL ROC are excluded.
+
+        Example:
+            >>> db = IndicatorsDB()
+            >>> roc_values = db.get_all_roc_values()
+            >>> top_momentum = sorted(roc_values.items(), key=lambda x: x[1], reverse=True)[:10]
+            >>> for symbol, roc in top_momentum:
+            ...     print(f"{symbol}: ROC={roc:.2f}%")
+        """
+        query = "SELECT symbol, roc FROM indicators WHERE roc IS NOT NULL"
+
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute(query)
+                rows = cursor.fetchall()
+
+                results = {row['symbol']: row['roc'] for row in rows}
+                logger.info(f"Retrieved ROC values for {len(results):,} symbols")
+                return results
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to query ROC values: {e}")
+            return {}
+
+    def get_roc_for_symbols(self, symbols: List[str]) -> Dict[str, float]:
+        """
+        Get ROC (Rate of Change) values for specific symbols.
+
+        Args:
+            symbols: List of stock symbols to lookup (e.g., ['PBR.A', 'AAPL'])
+
+        Returns:
+            Dict mapping ORIGINAL symbol -> ROC value. Symbols not found
+            or with NULL ROC are excluded. Keys use original symbols
+            (e.g., 'PBR.A') for Alpaca API compatibility.
+
+        Example:
+            >>> db = IndicatorsDB()
+            >>> roc = db.get_roc_for_symbols(['AAPL', 'MSFT', 'GOOGL'])
+            >>> for symbol, value in roc.items():
+            ...     print(f"{symbol}: ROC={value:.2f}%")
+        """
+        if not symbols:
+            return {}
+
+        # Create mapping of normalized -> original symbols for result mapping
+        symbol_map = {normalize_symbol(s): s for s in symbols}
+        normalized_symbols = list(symbol_map.keys())
+
+        # Create parameterized query with placeholders
+        placeholders = ','.join('?' * len(normalized_symbols))
+        query = f"""
+            SELECT symbol, roc
+            FROM indicators
+            WHERE symbol IN ({placeholders})
+                AND roc IS NOT NULL
+        """
+
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute(query, normalized_symbols)
+                rows = cursor.fetchall()
+
+                # Build dict mapping ORIGINAL symbol -> ROC value
+                results = {}
+                for row in rows:
+                    db_symbol = row['symbol']
+                    original_symbol = symbol_map.get(db_symbol)
+                    if original_symbol:
+                        results[original_symbol] = row['roc']
+
+                logger.info(
+                    f"ROC lookup: {len(results)}/{len(symbols)} symbols found"
+                )
+                return results
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to query ROC for symbols: {e}")
+            return {}
+
+    def get_ohlc_data(self, symbols: List[str]) -> Dict[str, Dict]:
+        """
+        Get OHLC (Open, High, Low, Close) data for Heikin Ashi calculation.
+
+        Retrieves price data needed to compute Heikin Ashi candles using
+        the calculate_heikin_ashi() function.
+
+        Args:
+            symbols: List of stock symbols to lookup (e.g., ['PBR.A', 'AAPL'])
+
+        Returns:
+            Dict mapping ORIGINAL symbol -> dict containing:
+            - open: Opening price
+            - high: High price
+            - low: Low price
+            - close: Closing price
+            Symbols not found or with incomplete OHLC data are excluded.
+
+        Example:
+            >>> db = IndicatorsDB()
+            >>> ohlc = db.get_ohlc_data(['AAPL', 'MSFT'])
+            >>> for symbol, data in ohlc.items():
+            ...     ha = calculate_heikin_ashi(
+            ...         data['open'], data['high'], data['low'], data['close']
+            ...     )
+            ...     print(f"{symbol}: HA Close={ha['ha_close']:.2f}")
+        """
+        if not symbols:
+            return {}
+
+        # Create mapping of normalized -> original symbols for result mapping
+        symbol_map = {normalize_symbol(s): s for s in symbols}
+        normalized_symbols = list(symbol_map.keys())
+
+        # Create parameterized query with placeholders
+        placeholders = ','.join('?' * len(normalized_symbols))
+        query = f"""
+            SELECT symbol, open, high, low, close
+            FROM indicators
+            WHERE symbol IN ({placeholders})
+                AND open IS NOT NULL
+                AND high IS NOT NULL
+                AND low IS NOT NULL
+                AND close IS NOT NULL
+        """
+
+        try:
+            with self._get_conn() as conn:
+                cursor = conn.execute(query, normalized_symbols)
+                rows = cursor.fetchall()
+
+                # Build dict mapping ORIGINAL symbol -> OHLC data
+                results = {}
+                for row in rows:
+                    db_symbol = row['symbol']
+                    original_symbol = symbol_map.get(db_symbol)
+                    if original_symbol:
+                        results[original_symbol] = {
+                            'open': row['open'],
+                            'high': row['high'],
+                            'low': row['low'],
+                            'close': row['close']
+                        }
+
+                logger.info(
+                    f"OHLC data lookup: {len(results)}/{len(symbols)} symbols found"
+                )
+                return results
+
+        except sqlite3.Error as e:
+            logger.error(f"Failed to query OHLC data: {e}")
+            return {}

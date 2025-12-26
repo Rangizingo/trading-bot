@@ -26,8 +26,8 @@ from config import (
     MAX_POSITIONS_SAFE,
     MAX_POSITIONS_CLASSIC,
     STOP_LOSS_PCT,
-    ENTRY_RSI,
-    ENTRY_CRSI,
+    ENTRY_RSI2,
+    EXIT_RSI2,
     MIN_VOLUME,
     MIN_PRICE,
     MARKET_OPEN,
@@ -59,7 +59,7 @@ NYSE_HOLIDAYS_2024_2025 = {
 
 
 def log_trade(account: str, action: str, symbol: str, shares: int, price: float, 
-              pnl: float = 0.0, crsi: float = 0.0, hold_minutes: int = 0) -> None:
+              pnl: float = 0.0, rsi2: float = 0.0, hold_minutes: int = 0) -> None:
     """Log trade details to account-specific CSV journal."""
     try:
         journal_file = LOG_DIR / f"trade_journal_{account.lower()}.csv"
@@ -67,9 +67,9 @@ def log_trade(account: str, action: str, symbol: str, shares: int, price: float,
         with open(journal_file, mode='a', newline='') as f:
             writer = csv.writer(f)
             if not file_exists:
-                writer.writerow(['timestamp', 'symbol', 'action', 'shares', 'price', 'pnl', 'crsi', 'hold_minutes'])
+                writer.writerow(['timestamp', 'symbol', 'action', 'shares', 'price', 'pnl', 'rsi2', 'hold_minutes'])
             timestamp = datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S')
-            writer.writerow([timestamp, symbol, action, shares, f'{price:.2f}', f'{pnl:.2f}', f'{crsi:.2f}', hold_minutes])
+            writer.writerow([timestamp, symbol, action, shares, f'{price:.2f}', f'{pnl:.2f}', f'{rsi2:.2f}', hold_minutes])
     except Exception as e:
         logging.getLogger("ConnorsBot").warning(f"Failed to log trade: {e}")
 
@@ -256,7 +256,7 @@ class ConnorsBot:
                 continue
             data = position_data[symbol]
             current_price = data['close']
-            sma5 = data['sma5']
+            rsi2 = data.get('rsi2', 0)
             entry_price = pos_info['entry_price']
             stop_loss = pos_info['stop_loss']
             shares = pos_info['shares']
@@ -266,13 +266,13 @@ class ConnorsBot:
                 if current_price <= stop_loss:
                     exit_reason = "stop_hit"
                     self.log(account, "info", f"Exit (stop): {symbol} ${current_price:.2f} <= ${stop_loss:.2f}")
-                elif current_price > sma5:
-                    exit_reason = "sma5_exit"
-                    self.log(account, "info", f"Exit (SMA5): {symbol} ${current_price:.2f} > ${sma5:.2f}")
+                elif rsi2 > EXIT_RSI2:
+                    exit_reason = "rsi2_exit"
+                    self.log(account, "info", f"Exit (RSI2): {symbol} RSI2={rsi2:.2f} > {EXIT_RSI2}")
             else:
-                if current_price > sma5:
-                    exit_reason = "sma5_exit"
-                    self.log(account, "info", f"Exit (SMA5): {symbol} ${current_price:.2f} > ${sma5:.2f}")
+                if rsi2 > EXIT_RSI2:
+                    exit_reason = "rsi2_exit"
+                    self.log(account, "info", f"Exit (RSI2): {symbol} RSI2={rsi2:.2f} > {EXIT_RSI2}")
             if exit_reason:
                 exit_signals.append({'symbol': symbol, 'shares': shares, 'current_price': current_price, 'reason': exit_reason, 'pnl': pnl})
         return exit_signals
@@ -285,7 +285,7 @@ class ConnorsBot:
             self.console_logger.info("No slots available in either account")
             return []
         max_needed = max(safe_slots, classic_slots) * 2
-        candidates = self.db.get_entry_candidates(max_crsi=ENTRY_CRSI, min_volume=MIN_VOLUME, min_price=MIN_PRICE, limit=max_needed)
+        candidates = self.db.get_rsi2_entry_candidates(max_rsi2=ENTRY_RSI2, min_volume=MIN_VOLUME, min_price=MIN_PRICE, limit=max_needed)
         if not candidates:
             self.console_logger.info("No entry candidates found")
             return []
@@ -307,7 +307,7 @@ class ConnorsBot:
             return False
         symbol = candidate['symbol']
         close_price = candidate['close']
-        crsi = candidate['crsi']
+        rsi2 = candidate['rsi2']
         try:
             acct = client.get_account()
             bp = acct['buying_power'] * 0.95
@@ -319,7 +319,7 @@ class ConnorsBot:
         shares = int(pos_value / close_price)
         if shares == 0:
             return False
-        self.log(account, "info", f"ENTRY: {symbol} x {shares} @ ~${close_price:.2f} (CRSI={crsi:.2f})")
+        self.log(account, "info", f"ENTRY: {symbol} x {shares} @ ~${close_price:.2f} (RSI2={rsi2:.2f})")
         client.cancel_orders_for_symbol(symbol)
         if account == "SAFE":
             result = client.submit_bracket_order(symbol, shares, STOP_LOSS_PCT)
@@ -345,7 +345,7 @@ class ConnorsBot:
                     'entry_time': datetime.now(ET)
                 }
                 self.log(account, "info", f"SUCCESS: {symbol} x {shares} @ ${fill_price:.2f}, no stop")
-            log_trade(account, 'ENTRY', symbol, shares, fill_price, crsi=crsi)
+            log_trade(account, 'ENTRY', symbol, shares, fill_price, rsi2=rsi2)
             return True
         self.log(account, "error", f"ENTRY FAILED: {symbol}")
         return False
@@ -431,7 +431,7 @@ class ConnorsBot:
         self.console_logger.info("CONNORS RSI TRADING BOT - DUAL MODE")
         self.console_logger.info("=" * 70)
         self.console_logger.info(f"Started: {datetime.now(ET).strftime('%Y-%m-%d %H:%M:%S %Z')}")
-        self.console_logger.info(f"Strategy: Entry CRSI <= {ENTRY_CRSI}, Exit Close > SMA5")
+        self.console_logger.info(f"Strategy: Entry RSI(2) < {ENTRY_RSI2}, Exit RSI(2) > {EXIT_RSI2}")
         self.console_logger.info(f"Position Size: {POSITION_SIZE_PCT*100:.0f}% per position")
         self.console_logger.info("")
         self.console_logger.info("SAFE Account:")
