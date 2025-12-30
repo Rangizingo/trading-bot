@@ -638,25 +638,38 @@ class IntradayBot:
     # =========================================================================
 
     def wait_for_market_open(self):
-        """Wait until market opens."""
-        now = datetime.now()
+        """Wait until market opens (blocks until market is open)."""
+        while self.running:
+            now = datetime.now()
 
-        # Check if it's a weekend
-        if now.weekday() >= 5:
-            self.console.info(f"Weekend detected. Waiting until Monday...")
-            return False
+            # Check if it's a weekend
+            if now.weekday() >= 5:
+                self.console.info("Weekend detected. Market closed until Monday.")
+                return False
 
-        current_time = now.time()
+            current_time = now.time()
 
-        if current_time < MARKET_OPEN:
+            if current_time >= MARKET_CLOSE:
+                self.console.info("Market closed for today.")
+                return False
+
+            if current_time >= MARKET_OPEN:
+                # Market is open!
+                return True
+
+            # Before market open - wait
             wait_seconds = (datetime.combine(now.date(), MARKET_OPEN) - now).total_seconds()
-            self.console.info(f"Market opens at {MARKET_OPEN}. Waiting {wait_seconds/60:.0f} minutes...")
-            return False
-        elif current_time >= MARKET_CLOSE:
-            self.console.info(f"Market closed for today. Exiting...")
-            return False
+            wait_minutes = wait_seconds / 60
 
-        return True
+            if wait_minutes > 1:
+                self.console.info(f"Market opens at {MARKET_OPEN}. Waiting {wait_minutes:.0f} minutes...")
+                # Sleep in 60-second intervals to allow Ctrl+C
+                time_module.sleep(min(60, wait_seconds))
+            else:
+                self.console.info(f"Market opens in {wait_seconds:.0f} seconds...")
+                time_module.sleep(wait_seconds)
+
+        return False
 
     def is_market_hours(self) -> bool:
         """Check if we're within market hours."""
@@ -689,12 +702,12 @@ class IntradayBot:
             self.console.error("Startup checks failed. Exiting.")
             return
 
-        # Wait for market open
-        if not self.wait_for_market_open():
-            self.console.info("Outside market hours. Exiting.")
-            return
-
         self.running = True
+
+        # Wait for market open (blocks until open)
+        if not self.wait_for_market_open():
+            self.console.info("Market closed. Exiting.")
+            return
         self.session_start = datetime.now()
         last_sync_mtime = self.get_sync_file_mtime()
 
