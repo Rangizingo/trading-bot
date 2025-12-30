@@ -519,14 +519,25 @@ class IntradayBot:
                 adjusted_target = signal.target
                 adjusted_stop = signal.stop
 
-                if signal.target and signal.metadata:
-                    # For ORB_V2: target = entry + 50% of range
-                    range_size = signal.metadata.get('range_size')
-                    if range_size and strategy_type == StrategyType.ORB_V2:
-                        # Recalculate target from actual fill price
-                        adjusted_target = fill_price + (range_size * 0.50)
-                        logger.debug(f"[{name}] Adjusted target for {signal.symbol}: "
-                                   f"${signal.target:.2f} -> ${adjusted_target:.2f} (fill slippage)")
+                # For ORB_V2: ALWAYS recalculate target from actual fill price
+                # Target = fill_price + (range_size * 0.50)
+                if strategy_type == StrategyType.ORB_V2:
+                    range_size = signal.metadata.get('range_size') if signal.metadata else None
+                    if range_size:
+                        TARGET_MULTIPLIER = 0.50  # 50% of range height
+                        adjusted_target = fill_price + (range_size * TARGET_MULTIPLIER)
+                        logger.info(f"[{name}] Target for {signal.symbol}: ${adjusted_target:.2f} "
+                                  f"(fill=${fill_price:.2f} + {TARGET_MULTIPLIER:.0%} of range=${range_size:.2f})")
+                    else:
+                        # Fallback: no range_size in metadata, use signal target but ensure it's above entry
+                        logger.warning(f"[{name}] No range_size in metadata for {signal.symbol}, using signal target")
+
+                    # Safety check: target must be above entry for long positions
+                    if direction == 'long' and adjusted_target and adjusted_target <= fill_price:
+                        # This should never happen, but if it does, set a minimum target
+                        logger.error(f"[{name}] Invalid target ${adjusted_target:.2f} <= entry ${fill_price:.2f}, "
+                                   f"setting minimum target")
+                        adjusted_target = fill_price * 1.005  # 0.5% minimum target
 
                 # Track position
                 self.positions[strategy_type][signal.symbol] = Position(
