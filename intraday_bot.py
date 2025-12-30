@@ -1,0 +1,765 @@
+"""
+Intraday Trading Bot
+
+Orchestrates 3 high-win-rate intraday trading strategies:
+- ORB: 60-Min Opening Range Breakout (89.4% win rate)
+- WMA20_HA: WMA(20) + Heikin Ashi (83% win rate)
+- HMA_HA: HMA + Heikin Ashi (77% win rate)
+
+Each strategy runs on its own Alpaca paper trading account.
+All positions are closed by end of day (no overnight holds).
+
+Usage:
+    python intraday_bot.py [--paper]
+"""
+
+import sys
+import os
+import time as time_module
+import signal
+import logging
+import csv
+from datetime import datetime, time as dt_time, timedelta
+from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+from dataclasses import dataclass, field
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
+
+from config import (
+    StrategyType, STRATEGY_CONFIG, ACCOUNTS,
+    INTRADAY_DB_PATH, SYNC_COMPLETE_FILE,
+    MARKET_OPEN, MARKET_CLOSE, OPENING_RANGE_END,
+    CYCLE_INTERVAL_MINUTES, MIN_PRICE, MIN_VOLUME,
+    ORB_MIN_RELATIVE_VOLUME, LOG_DIR, ET,
+)
+from data.intraday_indicators import IntradayIndicators
+from strategies import ORBStrategy, WMAHAStrategy, HMAHAStrategy
+from strategies.base_strategy import EntrySignal, ExitSignal
+from execution.alpaca_client import AlpacaClient
+
+
+# =============================================================================
+# Logging Setup
+# =============================================================================
+
+def setup_logging(strategy_name: str) -> logging.Logger:
+    """Create a logger for a specific strategy."""
+    logger = logging.getLogger(f"intraday.{strategy_name}")
+    logger.setLevel(logging.DEBUG)
+
+    # File handler
+    log_file = LOG_DIR / f"trading_{strategy_name.lower()}.log"
+    file_handler = logging.FileHandler(log_file, mode='a')
+    file_handler.setLevel(logging.DEBUG)
+    file_format = logging.Formatter(
+        '%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(file_format)
+    logger.addHandler(file_handler)
+
+    return logger
+
+
+def setup_console_logger() -> logging.Logger:
+    """Create a console logger for unified output."""
+    logger = logging.getLogger("intraday.console")
+    logger.setLevel(logging.INFO)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_format = logging.Formatter(
+        '%(asctime)s %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(console_format)
+    logger.addHandler(console_handler)
+
+    return logger
+
+
+# =============================================================================
+# Position Tracking
+# =============================================================================
+
+@dataclass
+class Position:
+    """Tracks an open position."""
+    symbol: str
+    shares: int
+    entry_price: float
+    entry_time: datetime
+    strategy: str
+    target: Optional[float] = None
+    stop: Optional[float] = None
+    metadata: Dict = field(default_factory=dict)
+
+
+# =============================================================================
+# Intraday Bot
+# =============================================================================
+
+class IntradayBot:
+    """
+    Main orchestrator for 3-strategy intraday trading.
+
+    Manages:
+    - 3 Alpaca clients (one per strategy/account)
+    - 3 Strategy instances
+    - Position tracking per account
+    - Trade journaling
+    - EOD position closure
+    """
+
+    def __init__(self, paper: bool = True):
+        """
+        Initialize the bot.
+
+        Args:
+            paper: Use paper trading accounts (default True)
+        """
+        self.paper = paper
+        self.running = False
+        self.session_start: Optional[datetime] = None
+        self.cycle_count = 0
+
+        # Console logger (unified output)
+        self.console = setup_console_logger()
+
+        # Initialize shared data layer
+        self.console.info("Initializing data layer...")
+        self.indicators = IntradayIndicators(INTRADAY_DB_PATH)
+
+        # Initialize clients, strategies, positions, and loggers for each account
+        self.clients: Dict[StrategyType, AlpacaClient] = {}
+        self.strategies: Dict[StrategyType, object] = {}
+        self.positions: Dict[StrategyType, Dict[str, Position]] = {}
+        self.loggers: Dict[StrategyType, logging.Logger] = {}
+        self.session_pnl: Dict[StrategyType, float] = {}
+
+        self._init_orb(paper)
+        self._init_wma_ha(paper)
+        self._init_hma_ha(paper)
+
+        # Graceful shutdown
+        signal.signal(signal.SIGINT, self._handle_shutdown)
+        signal.signal(signal.SIGTERM, self._handle_shutdown)
+
+    def _init_orb(self, paper: bool):
+        """Initialize ORB strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.ORB]
+        account = ACCOUNTS[StrategyType.ORB]
+
+        self.clients[StrategyType.ORB] = AlpacaClient(
+            paper=paper,
+            api_key=account["api_key"],
+            secret_key=account["secret_key"],
+            name="ORB"
+        )
+        self.strategies[StrategyType.ORB] = ORBStrategy(
+            indicators=self.indicators,
+            max_positions=config["max_positions"],
+            position_size_pct=config["position_size_pct"],
+            risk_per_trade_pct=config["risk_per_trade_pct"],
+            eod_exit_time=config["eod_exit_time"],
+            min_price=MIN_PRICE,
+            min_relative_volume=ORB_MIN_RELATIVE_VOLUME,
+        )
+        self.positions[StrategyType.ORB] = {}
+        self.loggers[StrategyType.ORB] = setup_logging("ORB")
+        self.session_pnl[StrategyType.ORB] = 0.0
+
+    def _init_wma_ha(self, paper: bool):
+        """Initialize WMA20+HA strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.WMA20_HA]
+        account = ACCOUNTS[StrategyType.WMA20_HA]
+
+        self.clients[StrategyType.WMA20_HA] = AlpacaClient(
+            paper=paper,
+            api_key=account["api_key"],
+            secret_key=account["secret_key"],
+            name="WMA20_HA"
+        )
+        self.strategies[StrategyType.WMA20_HA] = WMAHAStrategy(
+            indicators=self.indicators,
+            max_positions=config["max_positions"],
+            position_size_pct=config["position_size_pct"],
+            risk_per_trade_pct=config["risk_per_trade_pct"],
+            eod_exit_time=config["eod_exit_time"],
+            min_price=MIN_PRICE,
+        )
+        self.positions[StrategyType.WMA20_HA] = {}
+        self.loggers[StrategyType.WMA20_HA] = setup_logging("WMA20_HA")
+        self.session_pnl[StrategyType.WMA20_HA] = 0.0
+
+    def _init_hma_ha(self, paper: bool):
+        """Initialize HMA+HA strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.HMA_HA]
+        account = ACCOUNTS[StrategyType.HMA_HA]
+
+        self.clients[StrategyType.HMA_HA] = AlpacaClient(
+            paper=paper,
+            api_key=account["api_key"],
+            secret_key=account["secret_key"],
+            name="HMA_HA"
+        )
+        self.strategies[StrategyType.HMA_HA] = HMAHAStrategy(
+            indicators=self.indicators,
+            max_positions=config["max_positions"],
+            position_size_pct=config["position_size_pct"],
+            risk_per_trade_pct=config["risk_per_trade_pct"],
+            eod_exit_time=config["eod_exit_time"],
+            min_price=MIN_PRICE,
+        )
+        self.positions[StrategyType.HMA_HA] = {}
+        self.loggers[StrategyType.HMA_HA] = setup_logging("HMA_HA")
+        self.session_pnl[StrategyType.HMA_HA] = 0.0
+
+    def _handle_shutdown(self, signum, frame):
+        """Handle graceful shutdown."""
+        self.console.info("\nShutdown signal received. Stopping bot...")
+        self.running = False
+
+    # =========================================================================
+    # Startup Checks
+    # =========================================================================
+
+    def startup_checks(self) -> bool:
+        """
+        Validate all dependencies before trading.
+
+        Returns:
+            True if all checks pass, False otherwise
+        """
+        self.console.info("=" * 60)
+        self.console.info("INTRADAY BOT - STARTUP CHECKS")
+        self.console.info("=" * 60)
+
+        all_ok = True
+
+        # Check database
+        all_ok &= self._check_database()
+
+        # Check each account
+        for strategy_type in StrategyType:
+            all_ok &= self._check_account(strategy_type)
+
+        if all_ok:
+            self.console.info("-" * 60)
+            self.console.info("All startup checks PASSED")
+            self.console.info("=" * 60)
+        else:
+            self.console.error("Startup checks FAILED - cannot continue")
+
+        return all_ok
+
+    def _check_database(self) -> bool:
+        """Check database connectivity and data freshness."""
+        try:
+            stats = self.indicators.get_stats()
+            self.console.info(f"[DB] Connected: {stats['symbol_count']:,} symbols, "
+                            f"{stats['total_bars']:,} bars")
+
+            # Check data freshness (should be within last hour during market hours)
+            if stats['max_date']:
+                age = datetime.now() - stats['max_date']
+                if age > timedelta(hours=2):
+                    self.console.warning(f"[DB] Data may be stale: last update {stats['max_date']}")
+                else:
+                    self.console.info(f"[DB] Data fresh: last update {stats['max_date']}")
+
+            return True
+
+        except Exception as e:
+            self.console.error(f"[DB] Connection failed: {e}")
+            return False
+
+    def _check_account(self, strategy_type: StrategyType) -> bool:
+        """Check Alpaca account connectivity."""
+        name = strategy_type.value.upper()
+        client = self.clients[strategy_type]
+
+        try:
+            account = client.get_account()
+            if account:
+                equity = float(account.get('equity', 0))
+                self.console.info(f"[{name}] Connected: ${equity:,.2f} equity")
+                return True
+            else:
+                self.console.error(f"[{name}] Failed to get account info")
+                return False
+
+        except Exception as e:
+            self.console.error(f"[{name}] Connection failed: {e}")
+            return False
+
+    # =========================================================================
+    # Position Sync
+    # =========================================================================
+
+    def sync_positions(self, strategy_type: StrategyType):
+        """
+        Sync positions from Alpaca to internal tracking.
+
+        Args:
+            strategy_type: Which strategy/account to sync
+        """
+        name = strategy_type.value.upper()
+        client = self.clients[strategy_type]
+        logger = self.loggers[strategy_type]
+
+        try:
+            alpaca_positions = client.get_positions()
+            if alpaca_positions is None:
+                logger.warning(f"[{name}] Failed to get positions from Alpaca")
+                return
+
+            # Build set of symbols we have
+            current_symbols = set(self.positions[strategy_type].keys())
+            alpaca_symbols = {p['symbol'] for p in alpaca_positions}
+
+            # Add new positions from Alpaca
+            for pos in alpaca_positions:
+                symbol = pos['symbol']
+                if symbol not in self.positions[strategy_type]:
+                    # Position exists in Alpaca but not tracked - add it
+                    self.positions[strategy_type][symbol] = Position(
+                        symbol=symbol,
+                        shares=int(pos['qty']),
+                        entry_price=float(pos['avg_entry_price']),
+                        entry_time=datetime.now(),  # Unknown, use now
+                        strategy=name,
+                    )
+                    logger.info(f"[{name}] Synced existing position: {symbol} "
+                              f"{pos['qty']} shares @ ${pos['avg_entry_price']}")
+
+            # Remove positions closed outside bot
+            for symbol in current_symbols - alpaca_symbols:
+                del self.positions[strategy_type][symbol]
+                logger.info(f"[{name}] Removed stale position: {symbol}")
+
+        except Exception as e:
+            logger.error(f"[{name}] Position sync error: {e}")
+
+    def sync_all_positions(self):
+        """Sync positions for all strategies."""
+        for strategy_type in StrategyType:
+            self.sync_positions(strategy_type)
+
+    # =========================================================================
+    # Trading Cycle
+    # =========================================================================
+
+    def run_cycle(self):
+        """Execute one trading cycle for all strategies."""
+        cycle_start = datetime.now()
+        self.cycle_count += 1
+
+        self.console.info("-" * 60)
+        self.console.info(f"CYCLE {self.cycle_count} - {cycle_start.strftime('%H:%M:%S')}")
+        self.console.info("-" * 60)
+
+        # Sync positions first
+        self.sync_all_positions()
+
+        # Process each strategy
+        for strategy_type in StrategyType:
+            self._process_strategy(strategy_type)
+
+        # Cycle summary
+        self._log_cycle_summary(cycle_start)
+
+    def _process_strategy(self, strategy_type: StrategyType):
+        """Process exits and entries for one strategy."""
+        name = strategy_type.value.upper()
+        client = self.clients[strategy_type]
+        strategy = self.strategies[strategy_type]
+        positions = self.positions[strategy_type]
+        logger = self.loggers[strategy_type]
+        config = STRATEGY_CONFIG[strategy_type]
+
+        # Check EOD exit time
+        now = datetime.now()
+        if now.time() >= config["eod_exit_time"]:
+            self._force_eod_exits(strategy_type)
+            return  # No new entries after EOD exit time
+
+        # Check exits
+        exits_executed = 0
+        for symbol in list(positions.keys()):
+            position = positions[symbol]
+            exit_signal = strategy.check_exit(symbol, {
+                'entry_price': position.entry_price,
+                'shares': position.shares,
+                'entry_time': position.entry_time,
+                'target': position.target,
+                'stop': position.stop,
+            })
+
+            if exit_signal:
+                success = self._execute_exit(strategy_type, symbol, exit_signal)
+                if success:
+                    exits_executed += 1
+
+        # Check entries (only if we have room)
+        available_slots = config["max_positions"] - len(positions)
+        if available_slots > 0:
+            candidates = strategy.get_candidates()
+
+            # Filter out symbols we already own
+            candidates = [c for c in candidates if c.symbol not in positions]
+
+            # Take top candidates up to available slots
+            for candidate in candidates[:available_slots]:
+                success = self._execute_entry(strategy_type, candidate)
+                if success:
+                    available_slots -= 1
+                    if available_slots <= 0:
+                        break
+
+        logger.info(f"[{name}] Cycle complete: {len(positions)} positions, "
+                   f"{exits_executed} exits")
+
+    def _force_eod_exits(self, strategy_type: StrategyType):
+        """Force close all positions at EOD."""
+        name = strategy_type.value.upper()
+        positions = self.positions[strategy_type]
+        logger = self.loggers[strategy_type]
+
+        if not positions:
+            return
+
+        self.console.info(f"[{name}] EOD EXIT: Closing {len(positions)} positions")
+
+        for symbol in list(positions.keys()):
+            position = positions[symbol]
+            current_price = self.indicators.get_current_price(symbol) or position.entry_price
+            pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+
+            exit_signal = ExitSignal(
+                symbol=symbol,
+                price=current_price,
+                reason='eod',
+                pnl_pct=pnl_pct,
+            )
+            self._execute_exit(strategy_type, symbol, exit_signal)
+
+    def _execute_entry(self, strategy_type: StrategyType, signal: EntrySignal) -> bool:
+        """Execute an entry order."""
+        name = strategy_type.value.upper()
+        client = self.clients[strategy_type]
+        logger = self.loggers[strategy_type]
+        config = STRATEGY_CONFIG[strategy_type]
+
+        try:
+            # Get account equity for position sizing
+            account = client.get_account()
+            if not account:
+                logger.error(f"[{name}] Cannot get account for sizing")
+                return False
+
+            equity = float(account.get('equity', 0))
+            strategy = self.strategies[strategy_type]
+
+            # Calculate shares
+            shares = strategy.calculate_position_size(
+                equity, signal.price, signal.stop
+            )
+
+            if shares <= 0:
+                logger.warning(f"[{name}] Position size too small for {signal.symbol}")
+                return False
+
+            # Submit order
+            logger.info(f"[{name}] ENTRY: {signal.symbol} {shares} shares @ ~${signal.price:.2f}")
+            self.console.info(f"[{name}] ENTRY: {signal.symbol} {shares} shares @ ~${signal.price:.2f}")
+
+            result = client.submit_simple_order(signal.symbol, shares)
+
+            if result and result.get('fill_price'):
+                fill_price = result['fill_price']
+                filled_qty = result.get('qty', shares)
+
+                # Track position
+                self.positions[strategy_type][signal.symbol] = Position(
+                    symbol=signal.symbol,
+                    shares=filled_qty,
+                    entry_price=fill_price,
+                    entry_time=datetime.now(),
+                    strategy=name,
+                    target=signal.target,
+                    stop=signal.stop,
+                    metadata=signal.metadata or {},
+                )
+
+                # Log trade
+                self._log_trade(strategy_type, signal.symbol, 'ENTRY',
+                              filled_qty, fill_price, 0, signal.reason)
+
+                logger.info(f"[{name}] FILLED: {signal.symbol} {filled_qty} @ ${fill_price:.2f}")
+                return True
+            else:
+                logger.error(f"[{name}] Order failed for {signal.symbol}")
+                return False
+
+        except Exception as e:
+            logger.error(f"[{name}] Entry error for {signal.symbol}: {e}")
+            return False
+
+    def _execute_exit(self, strategy_type: StrategyType, symbol: str,
+                     signal: ExitSignal) -> bool:
+        """Execute an exit order."""
+        name = strategy_type.value.upper()
+        client = self.clients[strategy_type]
+        logger = self.loggers[strategy_type]
+        positions = self.positions[strategy_type]
+
+        if symbol not in positions:
+            return False
+
+        position = positions[symbol]
+
+        try:
+            logger.info(f"[{name}] EXIT: {symbol} ({signal.reason}) "
+                       f"P&L: {signal.pnl_pct:+.2f}%")
+            self.console.info(f"[{name}] EXIT: {symbol} ({signal.reason}) "
+                            f"P&L: {signal.pnl_pct:+.2f}%")
+
+            result = client.close_position(symbol)
+
+            if result:
+                # Calculate P&L
+                exit_price = signal.price
+                pnl = (exit_price - position.entry_price) * position.shares
+                hold_minutes = (datetime.now() - position.entry_time).total_seconds() / 60
+
+                # Update session P&L
+                self.session_pnl[strategy_type] += pnl
+
+                # Log trade
+                self._log_trade(strategy_type, symbol, 'EXIT',
+                              position.shares, exit_price, pnl, signal.reason,
+                              hold_minutes=hold_minutes)
+
+                # Remove from tracking
+                del positions[symbol]
+
+                logger.info(f"[{name}] CLOSED: {symbol} P&L: ${pnl:+.2f} "
+                           f"(held {hold_minutes:.0f} min)")
+                return True
+            else:
+                logger.error(f"[{name}] Failed to close {symbol}")
+                return False
+
+        except Exception as e:
+            logger.error(f"[{name}] Exit error for {symbol}: {e}")
+            return False
+
+    # =========================================================================
+    # Trade Journaling
+    # =========================================================================
+
+    def _log_trade(self, strategy_type: StrategyType, symbol: str, action: str,
+                   shares: int, price: float, pnl: float, reason: str,
+                   hold_minutes: float = 0):
+        """Log a trade to the CSV journal."""
+        name = strategy_type.value.lower()
+        journal_file = LOG_DIR / f"trade_journal_{name}.csv"
+
+        # Create file with headers if needed
+        if not journal_file.exists():
+            with open(journal_file, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'timestamp', 'symbol', 'action', 'shares', 'price',
+                    'pnl', 'reason', 'hold_minutes'
+                ])
+
+        # Append trade
+        with open(journal_file, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                datetime.now().isoformat(),
+                symbol,
+                action,
+                shares,
+                f"{price:.2f}",
+                f"{pnl:.2f}",
+                reason,
+                f"{hold_minutes:.1f}",
+            ])
+
+    def _log_cycle_summary(self, cycle_start: datetime):
+        """Log a summary of the cycle."""
+        cycle_duration = (datetime.now() - cycle_start).total_seconds()
+
+        self.console.info("")
+        self.console.info("CYCLE SUMMARY:")
+        self.console.info(f"{'Strategy':<12} {'Positions':<10} {'Session P&L':<15}")
+        self.console.info("-" * 40)
+
+        total_pnl = 0
+        for strategy_type in StrategyType:
+            name = strategy_type.value.upper()
+            pos_count = len(self.positions[strategy_type])
+            pnl = self.session_pnl[strategy_type]
+            total_pnl += pnl
+            self.console.info(f"{name:<12} {pos_count:<10} ${pnl:>+12,.2f}")
+
+        self.console.info("-" * 40)
+        self.console.info(f"{'TOTAL':<12} {'':<10} ${total_pnl:>+12,.2f}")
+        self.console.info(f"Cycle duration: {cycle_duration:.1f}s")
+
+    def _log_end_of_day(self):
+        """Log end of day summary."""
+        self.console.info("")
+        self.console.info("=" * 60)
+        self.console.info("END OF DAY SUMMARY")
+        self.console.info("=" * 60)
+
+        for strategy_type in StrategyType:
+            name = strategy_type.value.upper()
+            pnl = self.session_pnl[strategy_type]
+            account = self.clients[strategy_type].get_account()
+            equity = float(account.get('equity', 0)) if account else 0
+
+            self.console.info(f"[{name}] Equity: ${equity:,.2f} | Session P&L: ${pnl:+,.2f}")
+
+        total_pnl = sum(self.session_pnl.values())
+        self.console.info("-" * 60)
+        self.console.info(f"Total Session P&L: ${total_pnl:+,.2f}")
+        self.console.info(f"Total Cycles: {self.cycle_count}")
+        self.console.info("=" * 60)
+
+    # =========================================================================
+    # Main Loop
+    # =========================================================================
+
+    def wait_for_market_open(self):
+        """Wait until market opens."""
+        now = datetime.now()
+
+        # Check if it's a weekend
+        if now.weekday() >= 5:
+            self.console.info(f"Weekend detected. Waiting until Monday...")
+            return False
+
+        current_time = now.time()
+
+        if current_time < MARKET_OPEN:
+            wait_seconds = (datetime.combine(now.date(), MARKET_OPEN) - now).total_seconds()
+            self.console.info(f"Market opens at {MARKET_OPEN}. Waiting {wait_seconds/60:.0f} minutes...")
+            return False
+        elif current_time >= MARKET_CLOSE:
+            self.console.info(f"Market closed for today. Exiting...")
+            return False
+
+        return True
+
+    def is_market_hours(self) -> bool:
+        """Check if we're within market hours."""
+        now = datetime.now()
+        if now.weekday() >= 5:  # Weekend
+            return False
+        current_time = now.time()
+        return MARKET_OPEN <= current_time < MARKET_CLOSE
+
+    def get_sync_file_mtime(self) -> Optional[float]:
+        """Get the modification time of the sync file."""
+        try:
+            if os.path.exists(SYNC_COMPLETE_FILE):
+                return os.path.getmtime(SYNC_COMPLETE_FILE)
+        except Exception:
+            pass
+        return None
+
+    def run(self):
+        """Main bot loop."""
+        self.console.info("")
+        self.console.info("=" * 60)
+        self.console.info("INTRADAY TRADING BOT")
+        self.console.info("3 Strategies | 3 Accounts | Intraday Only")
+        self.console.info("=" * 60)
+        self.console.info("")
+
+        # Startup checks
+        if not self.startup_checks():
+            self.console.error("Startup checks failed. Exiting.")
+            return
+
+        # Wait for market open
+        if not self.wait_for_market_open():
+            self.console.info("Outside market hours. Exiting.")
+            return
+
+        self.running = True
+        self.session_start = datetime.now()
+        last_sync_mtime = self.get_sync_file_mtime()
+
+        self.console.info("")
+        self.console.info("Bot started. Watching for sync updates...")
+        self.console.info(f"Cycle interval: {CYCLE_INTERVAL_MINUTES} minutes")
+        self.console.info("Press Ctrl+C to stop")
+        self.console.info("")
+
+        # Initial sync
+        self.sync_all_positions()
+
+        while self.running and self.is_market_hours():
+            try:
+                # Check for sync file update
+                current_mtime = self.get_sync_file_mtime()
+
+                if current_mtime and current_mtime != last_sync_mtime:
+                    last_sync_mtime = current_mtime
+                    self.run_cycle()
+
+                # Sleep briefly to avoid busy-waiting
+                time_module.sleep(5)
+
+            except Exception as e:
+                self.console.error(f"Cycle error: {e}")
+                import traceback
+                traceback.print_exc()
+                time_module.sleep(30)
+
+        # End of day
+        self._log_end_of_day()
+        self.console.info("Bot stopped.")
+
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
+def main():
+    """Main entry point."""
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Intraday Trading Bot")
+    parser.add_argument('--paper', action='store_true', default=True,
+                       help="Use paper trading (default: True)")
+    parser.add_argument('--live', action='store_true',
+                       help="Use live trading (CAUTION)")
+
+    args = parser.parse_args()
+    paper = not args.live
+
+    if not paper:
+        print("=" * 60)
+        print("WARNING: LIVE TRADING MODE")
+        print("Real money will be used!")
+        print("=" * 60)
+        confirm = input("Type 'CONFIRM' to proceed: ")
+        if confirm != 'CONFIRM':
+            print("Aborted.")
+            return
+
+    bot = IntradayBot(paper=paper)
+    bot.run()
+
+
+if __name__ == "__main__":
+    main()

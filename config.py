@@ -1,9 +1,9 @@
 """
-Configuration module for Connors RSI Trading Bot.
+Configuration module for Intraday Trading Bot.
 
 Centralizes all configuration parameters including:
 - Database paths
-- Alpaca API credentials
+- Alpaca API credentials (3 accounts for 3 strategies)
 - Trading parameters
 - Market hours and scheduling
 """
@@ -19,44 +19,45 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path="C:/Users/User/Documents/AI/VV7/.env")
 
 # =============================================================================
-# Trading Mode Configuration
+# Strategy Configuration
 # =============================================================================
 
-class TradingMode(Enum):
-    """Trading mode selection for entry and exit behavior."""
-    SAFE = "safe"
-    CLASSIC = "classic"
-
-
 class StrategyType(Enum):
-    """Trading strategy selection."""
-    CRSI = "crsi"       # Original ConnorsRSI (designed for daily timeframe)
-    ROC_HA = "roc_ha"   # ROC + Heikin Ashi (optimized for intraday)
+    """Intraday trading strategies."""
+    ORB = "orb"           # 60-min Opening Range Breakout (89.4% win rate)
+    WMA20_HA = "wma20_ha" # WMA(20) + Heikin Ashi (83% win rate)
+    HMA_HA = "hma_ha"     # HMA + Heikin Ashi (77% win rate)
 
 
-MODE_INFO = {
-    TradingMode.SAFE: {
-        "name": "SAFE MODE",
-        "subtitle": "Recommended for beginners",
-        "features": [
-            ("Entry", "Bracket order (BUY + STOP)"),
-            ("Stop Loss", "3% below entry"),
-            ("Exit", "Price > SMA5 OR stop triggered"),
-            ("Max Loss", "3% per position"),
-            ("Risk", "Lower (capped losses)"),
-        ]
+# Strategy-specific configurations
+STRATEGY_CONFIG = {
+    StrategyType.ORB: {
+        "name": "60-Min Opening Range Breakout",
+        "win_rate": "89.4%",
+        "max_positions": 5,
+        "position_size_pct": 0.10,
+        "risk_per_trade_pct": 0.02,
+        "eod_exit_time": time(14, 0),  # 2:00 PM ET
+        "description": "Breakout above 60-min range with volume + VWAP + EMA confirmation",
     },
-    TradingMode.CLASSIC: {
-        "name": "CLASSIC MODE",
-        "subtitle": "Larry Connors original",
-        "features": [
-            ("Entry", "Simple BUY order"),
-            ("Stop Loss", "None"),
-            ("Exit", "Price > SMA5 only"),
-            ("Max Loss", "Unlimited (ride the dip)"),
-            ("Risk", "Higher (but 75% win rate historically)"),
-        ]
-    }
+    StrategyType.WMA20_HA: {
+        "name": "WMA(20) + Heikin Ashi",
+        "win_rate": "83%",
+        "max_positions": 5,
+        "position_size_pct": 0.10,
+        "risk_per_trade_pct": 0.02,
+        "eod_exit_time": time(15, 45),  # 3:45 PM ET
+        "description": "WMA crossover with 2 green flat-bottom HA candles",
+    },
+    StrategyType.HMA_HA: {
+        "name": "HMA + Heikin Ashi",
+        "win_rate": "77%",
+        "max_positions": 5,
+        "position_size_pct": 0.10,
+        "risk_per_trade_pct": 0.02,
+        "eod_exit_time": time(15, 45),  # 3:45 PM ET
+        "description": "HMA crossover with green HA confirmation",
+    },
 }
 
 # =============================================================================
@@ -70,60 +71,81 @@ INTRADAY_DB_PATH = os.path.expandvars(r"%LOCALAPPDATA%\VV7SimpleBridge\intraday.
 SYNC_COMPLETE_FILE = os.path.expandvars(r"%LOCALAPPDATA%\VV7SimpleBridge\sync_complete.txt")
 
 # =============================================================================
-# Alpaca API Credentials
+# Alpaca API Credentials - 3 Accounts for 3 Strategies
 # =============================================================================
 
-# Legacy credentials (kept for backward compatibility)
+# ORB Strategy Account (60-min Opening Range Breakout)
+ALPACA_ORB_API_KEY = os.environ.get(
+    "ALPACA_ORB_API_KEY",
+    "PKUWXI5LD5GMPQTLHTGZLJMHMA"
+)
+ALPACA_ORB_SECRET_KEY = os.environ.get(
+    "ALPACA_ORB_SECRET_KEY",
+    "9xjaaU9RLuS1TXZ3niVCKdKd14Xm7MVSatkkkUGsFvoH"
+)
+
+# WMA20+HA Strategy Account
+ALPACA_WMA_API_KEY = os.environ.get(
+    "ALPACA_WMA_API_KEY",
+    "PKEWDBHRFW7RMW2YXXRCAGE6ZJ"
+)
+ALPACA_WMA_SECRET_KEY = os.environ.get(
+    "ALPACA_WMA_SECRET_KEY",
+    "8dYkVbFmJdN3t53bf1dsGv6pZRhRCTffTLR5mLGG1bNn"
+)
+
+# HMA+HA Strategy Account
+ALPACA_HMA_API_KEY = os.environ.get(
+    "ALPACA_HMA_API_KEY",
+    "PKTGRHXB4LUKDH7T4PK3SOZIPX"
+)
+ALPACA_HMA_SECRET_KEY = os.environ.get(
+    "ALPACA_HMA_SECRET_KEY",
+    "9dCHV3gRciNXFduiQXdvxkV12cUKNmVgM8VGBRGyMEL5"
+)
+
+# Account configurations with credentials
+ACCOUNTS = {
+    StrategyType.ORB: {
+        "api_key": ALPACA_ORB_API_KEY,
+        "secret_key": ALPACA_ORB_SECRET_KEY,
+        "name": "ORB",
+    },
+    StrategyType.WMA20_HA: {
+        "api_key": ALPACA_WMA_API_KEY,
+        "secret_key": ALPACA_WMA_SECRET_KEY,
+        "name": "WMA20_HA",
+    },
+    StrategyType.HMA_HA: {
+        "api_key": ALPACA_HMA_API_KEY,
+        "secret_key": ALPACA_HMA_SECRET_KEY,
+        "name": "HMA_HA",
+    },
+}
+
+# Legacy credentials (backward compatibility)
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
-
-# CRSI-SAFE account (bracket orders with stop losses)
-ALPACA_SAFE_API_KEY = os.environ.get("ALPACA_SAFE_API_KEY", "")
-ALPACA_SAFE_SECRET_KEY = os.environ.get("ALPACA_SAFE_SECRET_KEY", "")
-
-# CRSI-CLASSIC account (simple orders, no stops)
-ALPACA_CLASSIC_API_KEY = os.environ.get("ALPACA_CLASSIC_API_KEY", "")
-ALPACA_CLASSIC_SECRET_KEY = os.environ.get("ALPACA_CLASSIC_SECRET_KEY", "")
-
-# Validate dual-account credentials are loaded
-if not ALPACA_SAFE_API_KEY or not ALPACA_SAFE_SECRET_KEY:
-    raise ValueError(
-        "SAFE account credentials not found. Ensure ALPACA_SAFE_API_KEY and "
-        "ALPACA_SAFE_SECRET_KEY are set in environment variables or .env file."
-    )
-
-if not ALPACA_CLASSIC_API_KEY or not ALPACA_CLASSIC_SECRET_KEY:
-    raise ValueError(
-        "CLASSIC account credentials not found. Ensure ALPACA_CLASSIC_API_KEY and "
-        "ALPACA_CLASSIC_SECRET_KEY are set in environment variables or .env file."
-    )
+ALPACA_SAFE_API_KEY = os.environ.get("ALPACA_SAFE_API_KEY", ALPACA_ORB_API_KEY)
+ALPACA_SAFE_SECRET_KEY = os.environ.get("ALPACA_SAFE_SECRET_KEY", ALPACA_ORB_SECRET_KEY)
+ALPACA_CLASSIC_API_KEY = os.environ.get("ALPACA_CLASSIC_API_KEY", ALPACA_WMA_API_KEY)
+ALPACA_CLASSIC_SECRET_KEY = os.environ.get("ALPACA_CLASSIC_SECRET_KEY", ALPACA_WMA_SECRET_KEY)
 
 # =============================================================================
 # Trading Parameters
 # =============================================================================
 
-# Capital allocation
-CAPITAL = 100000
+# Default position sizing
 POSITION_SIZE_PCT = 0.10  # 10% per position
-MAX_POSITIONS = 5  # Default fallback
-MAX_POSITIONS_SAFE = 10  # More positions allowed with stop protection
-MAX_POSITIONS_CLASSIC = 7  # Fewer positions without stops (higher risk per position)
-
-# Risk management
-STOP_LOSS_PCT = 0.03  # 3% stop loss
-
-# Connors RSI strategy parameters
-ENTRY_RSI = 10  # Enter when RSI drops below this level (65-75% win rate) - DEPRECATED, use ENTRY_CRSI
-ENTRY_CRSI = 10  # Enter when ConnorsRSI drops below this level (true Connors strategy)
-# EXIT: Close > SMA5 (true Connors exit - no RSI exit threshold)
-
-# RSI(2) strategy parameters (replaces CRSI)
-ENTRY_RSI2 = 15   # Enter when RSI(2) < 15 (oversold)
-EXIT_RSI2 = 70    # Exit when RSI(2) > 70 (overbought)
+RISK_PER_TRADE_PCT = 0.02  # 2% max risk per trade
+MAX_POSITIONS = 5  # Per strategy
 
 # Stock filtering criteria
-MIN_VOLUME = 1000    # Minimum per-bar volume (filters out illiquid stocks like BBP)
+MIN_VOLUME = 1000    # Minimum per-bar volume
 MIN_PRICE = 5.00     # Minimum stock price
+
+# ORB-specific parameters
+ORB_MIN_RELATIVE_VOLUME = 1.5  # Minimum relative volume for ORB entries
 
 # =============================================================================
 # Market Hours and Scheduling
@@ -135,6 +157,9 @@ ET = ZoneInfo("America/New_York")
 # Market session times (ET)
 MARKET_OPEN = time(9, 30)   # 9:30 AM ET
 MARKET_CLOSE = time(16, 0)  # 4:00 PM ET
+
+# Opening range window
+OPENING_RANGE_END = time(10, 30)  # 60-min opening range ends at 10:30 AM
 
 # Trading cycle frequency
 CYCLE_INTERVAL_MINUTES = 5  # Run strategy every 5 minutes
@@ -151,13 +176,9 @@ LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
 # =============================================================================
-# Derived Configuration
+# Validation
 # =============================================================================
 
-# Position sizing
-POSITION_SIZE_DOLLARS = CAPITAL * POSITION_SIZE_PCT
-
-# Validate configuration
 def validate_config() -> None:
     """Validate configuration parameters."""
     if not Path(INTRADAY_DB_PATH).parent.exists():
@@ -165,20 +186,20 @@ def validate_config() -> None:
             f"Database directory does not exist: {Path(INTRADAY_DB_PATH).parent}"
         )
 
+    # Validate all account credentials
+    for strategy, account in ACCOUNTS.items():
+        if not account["api_key"] or not account["secret_key"]:
+            raise ValueError(
+                f"{strategy.value} account credentials not found. "
+                f"Ensure ALPACA_{strategy.value.upper()}_API_KEY and "
+                f"ALPACA_{strategy.value.upper()}_SECRET_KEY are set."
+            )
+
     if MAX_POSITIONS <= 0:
         raise ValueError(f"MAX_POSITIONS must be positive, got {MAX_POSITIONS}")
 
     if POSITION_SIZE_PCT <= 0 or POSITION_SIZE_PCT > 1:
         raise ValueError(f"POSITION_SIZE_PCT must be between 0 and 1, got {POSITION_SIZE_PCT}")
-
-    if STOP_LOSS_PCT <= 0 or STOP_LOSS_PCT >= 1:
-        raise ValueError(f"STOP_LOSS_PCT must be between 0 and 1, got {STOP_LOSS_PCT}")
-
-    if ENTRY_RSI <= 0 or ENTRY_RSI >= 100:
-        raise ValueError(f"ENTRY_RSI must be between 0 and 100, got {ENTRY_RSI}")
-
-    if ENTRY_CRSI <= 0 or ENTRY_CRSI >= 100:
-        raise ValueError(f"ENTRY_CRSI must be between 0 and 100, got {ENTRY_CRSI}")
 
 
 # Validate on import
