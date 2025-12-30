@@ -320,21 +320,22 @@ class AlpacaClient:
             logger.error(f"Unexpected error closing position for {symbol}: {e}")
             return False
 
-    def submit_simple_order(self, symbol: str, qty: int) -> Optional[Dict]:
+    def submit_simple_order(self, symbol: str, qty: int, side: str = 'buy') -> Optional[Dict]:
         """
-        Submit a simple market buy order without stop loss (Classic Mode).
+        Submit a simple market order without stop loss.
 
-        This submits a market buy order and waits for it to fill.
+        This submits a market order and waits for it to fill.
         No stop loss order is created.
 
         Args:
-            symbol: Stock symbol to buy.
-            qty: Number of shares to buy.
+            symbol: Stock symbol to trade.
+            qty: Number of shares.
+            side: 'buy' for long entry, 'sell' for short entry.
 
         Returns:
             Dictionary with order details if successful:
-                - order_id: Buy order ID (str)
-                - fill_price: Actual fill price from buy order (float)
+                - order_id: Order ID (str)
+                - fill_price: Actual fill price (float)
                 - symbol: Stock symbol (str)
                 - qty: Number of shares actually filled (int)
             Returns None if order fails.
@@ -346,17 +347,20 @@ class AlpacaClient:
             # Cancel any existing orders for this symbol to prevent wash trade errors
             self.cancel_orders_for_symbol(symbol)
 
-            # Submit the market buy order with GTC
-            buy_order_data = MarketOrderRequest(
+            # Determine order side
+            order_side = OrderSide.BUY if side.lower() == 'buy' else OrderSide.SELL
+
+            # Submit the market order with GTC
+            order_data = MarketOrderRequest(
                 symbol=symbol,
                 qty=qty,
-                side=OrderSide.BUY,
+                side=order_side,
                 time_in_force=TimeInForce.GTC
             )
-            buy_order = self.client.submit_order(buy_order_data)
+            buy_order = self.client.submit_order(order_data)
 
             logger.info(
-                f"Simple order - Buy order submitted: {symbol} x {qty}, "
+                f"Simple order - {side.upper()} order submitted: {symbol} x {qty}, "
                 f"order_id={buy_order.id}, status={buy_order.status}"
             )
 
@@ -373,13 +377,13 @@ class AlpacaClient:
                 if current_order.status.value in ['filled', 'partially_filled']:
                     filled_order = current_order
                     logger.info(
-                        f"Simple order - Buy order filled: {symbol} x {current_order.filled_qty} "
+                        f"Simple order - {side.upper()} order filled: {symbol} x {current_order.filled_qty} "
                         f"@ ${float(current_order.filled_avg_price):.2f}"
                     )
                     break
                 elif current_order.status.value in ['cancelled', 'expired', 'rejected']:
                     logger.error(
-                        f"Simple order - Buy order {current_order.status.value}: {symbol}, "
+                        f"Simple order - {side.upper()} order {current_order.status.value}: {symbol}, "
                         f"order_id={buy_order.id}"
                     )
                     return None
@@ -391,7 +395,7 @@ class AlpacaClient:
             # Check if we got a fill
             if filled_order is None:
                 logger.error(
-                    f"Simple order - Buy order did not fill within {max_wait_time}s: "
+                    f"Simple order - {side.upper()} order did not fill within {max_wait_time}s: "
                     f"{symbol}, order_id={buy_order.id}"
                 )
                 # Attempt to cancel the unfilled order

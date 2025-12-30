@@ -23,40 +23,52 @@ load_dotenv(dotenv_path="C:/Users/User/Documents/AI/VV7/.env")
 # =============================================================================
 
 class StrategyType(Enum):
-    """Intraday trading strategies."""
-    ORB = "orb"           # 60-min Opening Range Breakout (89.4% win rate)
-    WMA20_HA = "wma20_ha" # WMA(20) + Heikin Ashi (83% win rate)
-    HMA_HA = "hma_ha"     # HMA + Heikin Ashi (77% win rate)
+    """Intraday trading strategies (V2 - verified true intraday)."""
+    ORB_V2 = "orb_v2"                       # Simplified ORB (74.56% win rate, 2.51 PF)
+    OVERNIGHT_REVERSAL = "overnight_reversal"  # Buy overnight losers (Sharpe 4.44)
+    STOCKS_IN_PLAY = "stocks_in_play"       # First 5-min candle on high-vol stocks (Sharpe 2.81)
 
 
 # Strategy-specific configurations
 STRATEGY_CONFIG = {
-    StrategyType.ORB: {
-        "name": "60-Min Opening Range Breakout",
-        "win_rate": "89.4%",
+    StrategyType.ORB_V2: {
+        "name": "ORB V2 (Simplified)",
+        "win_rate": "74.56%",
+        "profit_factor": 2.51,
         "max_positions": 5,
         "position_size_pct": 0.10,
         "risk_per_trade_pct": 0.02,
-        "eod_exit_time": time(14, 0),  # 2:00 PM ET
-        "description": "Breakout above 60-min range with volume + VWAP + EMA confirmation",
+        "eod_exit_time": time(15, 0),  # 3:00 PM ET
+        "max_range_width_pct": 0.008,  # 0.8% max range width
+        "target_multiplier": 0.50,     # 50% of range
+        "description": "Breakout above 60-min range (simplified, no VWAP/EMA required)",
     },
-    StrategyType.WMA20_HA: {
-        "name": "WMA(20) + Heikin Ashi",
-        "win_rate": "83%",
-        "max_positions": 5,
+    StrategyType.OVERNIGHT_REVERSAL: {
+        "name": "Overnight-Intraday Reversal",
+        "sharpe_ratio": 4.44,
+        "max_positions": 10,
         "position_size_pct": 0.10,
-        "risk_per_trade_pct": 0.02,
-        "eod_exit_time": time(15, 45),  # 3:45 PM ET
-        "description": "WMA crossover with 2 green flat-bottom HA candles",
+        "risk_per_trade_pct": 0.10,  # No stops, higher risk allocation
+        "eod_exit_time": time(16, 0),  # 4:00 PM ET (market close)
+        "entry_window_end": time(9, 35),  # Entries only 9:30-9:35 AM
+        "no_stops": True,  # Strategy has no stop loss
+        "description": "Buy bottom decile of overnight losers at open, sell at close",
     },
-    StrategyType.HMA_HA: {
-        "name": "HMA + Heikin Ashi",
-        "win_rate": "77%",
+    StrategyType.STOCKS_IN_PLAY: {
+        "name": "ORB Stocks in Play",
+        "sharpe_ratio": 2.81,
+        "win_rate": "17-42%",
         "max_positions": 5,
         "position_size_pct": 0.10,
         "risk_per_trade_pct": 0.02,
-        "eod_exit_time": time(15, 45),  # 3:45 PM ET
-        "description": "HMA crossover with green HA confirmation",
+        "eod_exit_time": time(16, 0),  # 4:00 PM ET
+        "entry_window_start": time(9, 35),  # After first 5-min candle
+        "entry_window_end": time(9, 40),
+        "atr_stop_pct": 0.10,  # 10% of ATR for stops
+        "min_avg_volume": 1_000_000,
+        "min_atr": 0.50,
+        "top_n_stocks": 20,
+        "description": "Trade first 5-min candle direction on high-volume stocks",
     },
 }
 
@@ -106,20 +118,20 @@ ALPACA_HMA_SECRET_KEY = os.environ.get(
 
 # Account configurations with credentials
 ACCOUNTS = {
-    StrategyType.ORB: {
+    StrategyType.ORB_V2: {
         "api_key": ALPACA_ORB_API_KEY,
         "secret_key": ALPACA_ORB_SECRET_KEY,
-        "name": "ORB",
+        "name": "ORB_V2",
     },
-    StrategyType.WMA20_HA: {
+    StrategyType.OVERNIGHT_REVERSAL: {
         "api_key": ALPACA_WMA_API_KEY,
         "secret_key": ALPACA_WMA_SECRET_KEY,
-        "name": "WMA20_HA",
+        "name": "OVERNIGHT_REVERSAL",
     },
-    StrategyType.HMA_HA: {
+    StrategyType.STOCKS_IN_PLAY: {
         "api_key": ALPACA_HMA_API_KEY,
         "secret_key": ALPACA_HMA_SECRET_KEY,
-        "name": "HMA_HA",
+        "name": "STOCKS_IN_PLAY",
     },
 }
 

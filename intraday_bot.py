@@ -1,10 +1,10 @@
 """
-Intraday Trading Bot
+Intraday Trading Bot V2
 
-Orchestrates 3 high-win-rate intraday trading strategies:
-- ORB: 60-Min Opening Range Breakout (89.4% win rate)
-- WMA20_HA: WMA(20) + Heikin Ashi (83% win rate)
-- HMA_HA: HMA + Heikin Ashi (77% win rate)
+Orchestrates 3 verified true intraday trading strategies:
+- ORB_V2: Simplified ORB (74.56% win rate, 2.51 profit factor)
+- OVERNIGHT_REVERSAL: Buy overnight losers (Sharpe 4.44)
+- STOCKS_IN_PLAY: First 5-min candle on high-vol stocks (Sharpe 2.81)
 
 Each strategy runs on its own Alpaca paper trading account.
 All positions are closed by end of day (no overnight holds).
@@ -32,10 +32,11 @@ from config import (
     INTRADAY_DB_PATH, SYNC_COMPLETE_FILE,
     MARKET_OPEN, MARKET_CLOSE, OPENING_RANGE_END,
     CYCLE_INTERVAL_MINUTES, MIN_PRICE, MIN_VOLUME,
-    ORB_MIN_RELATIVE_VOLUME, LOG_DIR, ET,
+    LOG_DIR, ET,
 )
 from data.intraday_indicators import IntradayIndicators
-from strategies import ORBStrategy, WMAHAStrategy, HMAHAStrategy
+from data.historical_data import HistoricalData
+from strategies import ORBV2Strategy, OvernightReversalStrategy, StocksInPlayStrategy
 from strategies.base_strategy import EntrySignal, ExitSignal
 from execution.alpaca_client import AlpacaClient
 
@@ -92,6 +93,7 @@ class Position:
     entry_price: float
     entry_time: datetime
     strategy: str
+    direction: str = 'long'  # 'long' or 'short'
     target: Optional[float] = None
     stop: Optional[float] = None
     metadata: Dict = field(default_factory=dict)
@@ -138,74 +140,52 @@ class IntradayBot:
         self.positions: Dict[StrategyType, Dict[str, Position]] = {}
         self.loggers: Dict[StrategyType, logging.Logger] = {}
         self.session_pnl: Dict[StrategyType, float] = {}
+        self.historical_data: Optional[HistoricalData] = None
 
-        self._init_orb(paper)
-        self._init_wma_ha(paper)
-        self._init_hma_ha(paper)
+        self._init_orb_v2(paper)
+        self._init_overnight_reversal(paper)
+        self._init_stocks_in_play(paper)
 
         # Graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
 
-    def _init_orb(self, paper: bool):
-        """Initialize ORB strategy components."""
-        config = STRATEGY_CONFIG[StrategyType.ORB]
-        account = ACCOUNTS[StrategyType.ORB]
+    def _init_orb_v2(self, paper: bool):
+        """Initialize ORB V2 strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.ORB_V2]
+        account = ACCOUNTS[StrategyType.ORB_V2]
 
-        self.clients[StrategyType.ORB] = AlpacaClient(
+        self.clients[StrategyType.ORB_V2] = AlpacaClient(
             paper=paper,
             api_key=account["api_key"],
             secret_key=account["secret_key"],
-            name="ORB"
+            name="ORB_V2"
         )
-        self.strategies[StrategyType.ORB] = ORBStrategy(
+        self.strategies[StrategyType.ORB_V2] = ORBV2Strategy(
             indicators=self.indicators,
             max_positions=config["max_positions"],
             position_size_pct=config["position_size_pct"],
             risk_per_trade_pct=config["risk_per_trade_pct"],
             eod_exit_time=config["eod_exit_time"],
             min_price=MIN_PRICE,
-            min_relative_volume=ORB_MIN_RELATIVE_VOLUME,
+            max_range_width_pct=config.get("max_range_width_pct", 0.008),
         )
-        self.positions[StrategyType.ORB] = {}
-        self.loggers[StrategyType.ORB] = setup_logging("ORB")
-        self.session_pnl[StrategyType.ORB] = 0.0
+        self.positions[StrategyType.ORB_V2] = {}
+        self.loggers[StrategyType.ORB_V2] = setup_logging("ORB_V2")
+        self.session_pnl[StrategyType.ORB_V2] = 0.0
 
-    def _init_wma_ha(self, paper: bool):
-        """Initialize WMA20+HA strategy components."""
-        config = STRATEGY_CONFIG[StrategyType.WMA20_HA]
-        account = ACCOUNTS[StrategyType.WMA20_HA]
+    def _init_overnight_reversal(self, paper: bool):
+        """Initialize Overnight Reversal strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.OVERNIGHT_REVERSAL]
+        account = ACCOUNTS[StrategyType.OVERNIGHT_REVERSAL]
 
-        self.clients[StrategyType.WMA20_HA] = AlpacaClient(
+        self.clients[StrategyType.OVERNIGHT_REVERSAL] = AlpacaClient(
             paper=paper,
             api_key=account["api_key"],
             secret_key=account["secret_key"],
-            name="WMA20_HA"
+            name="OVERNIGHT_REVERSAL"
         )
-        self.strategies[StrategyType.WMA20_HA] = WMAHAStrategy(
-            indicators=self.indicators,
-            max_positions=config["max_positions"],
-            position_size_pct=config["position_size_pct"],
-            risk_per_trade_pct=config["risk_per_trade_pct"],
-            eod_exit_time=config["eod_exit_time"],
-            min_price=MIN_PRICE,
-        )
-        self.positions[StrategyType.WMA20_HA] = {}
-        self.loggers[StrategyType.WMA20_HA] = setup_logging("WMA20_HA")
-        self.session_pnl[StrategyType.WMA20_HA] = 0.0
-
-    def _init_hma_ha(self, paper: bool):
-        """Initialize HMA+HA strategy components."""
-        config = STRATEGY_CONFIG[StrategyType.HMA_HA]
-        account = ACCOUNTS[StrategyType.HMA_HA]
-
-        self.clients[StrategyType.HMA_HA] = AlpacaClient(
-            paper=paper,
-            api_key=account["api_key"],
-            secret_key=account["secret_key"],
-            name="HMA_HA"
-        )
-        self.strategies[StrategyType.HMA_HA] = HMAHAStrategy(
+        self.strategies[StrategyType.OVERNIGHT_REVERSAL] = OvernightReversalStrategy(
             indicators=self.indicators,
             max_positions=config["max_positions"],
             position_size_pct=config["position_size_pct"],
@@ -213,9 +193,48 @@ class IntradayBot:
             eod_exit_time=config["eod_exit_time"],
             min_price=MIN_PRICE,
         )
-        self.positions[StrategyType.HMA_HA] = {}
-        self.loggers[StrategyType.HMA_HA] = setup_logging("HMA_HA")
-        self.session_pnl[StrategyType.HMA_HA] = 0.0
+        self.positions[StrategyType.OVERNIGHT_REVERSAL] = {}
+        self.loggers[StrategyType.OVERNIGHT_REVERSAL] = setup_logging("OVERNIGHT_REVERSAL")
+        self.session_pnl[StrategyType.OVERNIGHT_REVERSAL] = 0.0
+
+    def _init_stocks_in_play(self, paper: bool):
+        """Initialize Stocks in Play strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.STOCKS_IN_PLAY]
+        account = ACCOUNTS[StrategyType.STOCKS_IN_PLAY]
+
+        self.clients[StrategyType.STOCKS_IN_PLAY] = AlpacaClient(
+            paper=paper,
+            api_key=account["api_key"],
+            secret_key=account["secret_key"],
+            name="STOCKS_IN_PLAY"
+        )
+
+        # Initialize historical data helper for ATR (shares API key with this account)
+        try:
+            self.historical_data = HistoricalData(
+                api_key=account["api_key"],
+                secret_key=account["secret_key"]
+            )
+        except Exception as e:
+            self.console.warning(f"Failed to initialize HistoricalData: {e}")
+            self.historical_data = None
+
+        self.strategies[StrategyType.STOCKS_IN_PLAY] = StocksInPlayStrategy(
+            indicators=self.indicators,
+            historical_data=self.historical_data,
+            max_positions=config["max_positions"],
+            position_size_pct=config["position_size_pct"],
+            risk_per_trade_pct=config["risk_per_trade_pct"],
+            eod_exit_time=config["eod_exit_time"],
+            min_price=MIN_PRICE,
+            min_avg_volume=config.get("min_avg_volume", 1_000_000),
+            min_atr=config.get("min_atr", 0.50),
+            atr_stop_pct=config.get("atr_stop_pct", 0.10),
+            top_n_stocks=config.get("top_n_stocks", 20),
+        )
+        self.positions[StrategyType.STOCKS_IN_PLAY] = {}
+        self.loggers[StrategyType.STOCKS_IN_PLAY] = setup_logging("STOCKS_IN_PLAY")
+        self.session_pnl[StrategyType.STOCKS_IN_PLAY] = 0.0
 
     def _handle_shutdown(self, signum, frame):
         """Handle graceful shutdown."""
@@ -234,7 +253,7 @@ class IntradayBot:
             True if all checks pass, False otherwise
         """
         self.console.info("=" * 60)
-        self.console.info("INTRADAY BOT - STARTUP CHECKS")
+        self.console.info("INTRADAY BOT V2 - STARTUP CHECKS")
         self.console.info("=" * 60)
 
         all_ok = True
@@ -324,16 +343,19 @@ class IntradayBot:
             for pos in alpaca_positions:
                 symbol = pos['symbol']
                 if symbol not in self.positions[strategy_type]:
+                    qty = int(pos['qty'])
+                    direction = 'short' if qty < 0 else 'long'
                     # Position exists in Alpaca but not tracked - add it
                     self.positions[strategy_type][symbol] = Position(
                         symbol=symbol,
-                        shares=int(pos['qty']),
+                        shares=abs(qty),
                         entry_price=float(pos['avg_entry_price']),
                         entry_time=datetime.now(),  # Unknown, use now
                         strategy=name,
+                        direction=direction,
                     )
                     logger.info(f"[{name}] Synced existing position: {symbol} "
-                              f"{pos['qty']} shares @ ${pos['avg_entry_price']}")
+                              f"{qty} shares @ ${pos['avg_entry_price']} ({direction})")
 
             # Remove positions closed outside bot
             for symbol in current_symbols - alpaca_symbols:
@@ -380,9 +402,9 @@ class IntradayBot:
         logger = self.loggers[strategy_type]
         config = STRATEGY_CONFIG[strategy_type]
 
-        # Check EOD exit time
-        now = datetime.now()
-        if now.time() >= config["eod_exit_time"]:
+        # Check EOD exit time (in ET)
+        now_et = datetime.now(ET)
+        if now_et.time() >= config["eod_exit_time"]:
             self._force_eod_exits(strategy_type)
             return  # No new entries after EOD exit time
 
@@ -396,6 +418,7 @@ class IntradayBot:
                 'entry_time': position.entry_time,
                 'target': position.target,
                 'stop': position.stop,
+                'direction': position.direction,
             })
 
             if exit_signal:
@@ -436,7 +459,12 @@ class IntradayBot:
         for symbol in list(positions.keys()):
             position = positions[symbol]
             current_price = self.indicators.get_current_price(symbol) or position.entry_price
-            pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+
+            # Calculate P&L based on direction
+            if position.direction == 'long':
+                pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
+            else:
+                pnl_pct = ((position.entry_price - current_price) / position.entry_price) * 100
 
             exit_signal = ExitSignal(
                 symbol=symbol,
@@ -472,15 +500,33 @@ class IntradayBot:
                 logger.warning(f"[{name}] Position size too small for {signal.symbol}")
                 return False
 
-            # Submit order
-            logger.info(f"[{name}] ENTRY: {signal.symbol} {shares} shares @ ~${signal.price:.2f}")
-            self.console.info(f"[{name}] ENTRY: {signal.symbol} {shares} shares @ ~${signal.price:.2f}")
+            # Determine direction from signal metadata
+            direction = signal.metadata.get('direction', 'long') if signal.metadata else 'long'
+            side = 'buy' if direction == 'long' else 'sell'
 
-            result = client.submit_simple_order(signal.symbol, shares)
+            # Submit order
+            logger.info(f"[{name}] ENTRY: {signal.symbol} {side} {shares} shares @ ~${signal.price:.2f}")
+            self.console.info(f"[{name}] ENTRY: {signal.symbol} {side.upper()} {shares} shares @ ~${signal.price:.2f}")
+
+            result = client.submit_simple_order(signal.symbol, shares, side=side)
 
             if result and result.get('fill_price'):
                 fill_price = result['fill_price']
                 filled_qty = result.get('qty', shares)
+
+                # Recalculate target based on actual fill price (not signal price)
+                # This fixes the bug where slippage causes "target hit" with negative P&L
+                adjusted_target = signal.target
+                adjusted_stop = signal.stop
+
+                if signal.target and signal.metadata:
+                    # For ORB_V2: target = entry + 50% of range
+                    range_size = signal.metadata.get('range_size')
+                    if range_size and strategy_type == StrategyType.ORB_V2:
+                        # Recalculate target from actual fill price
+                        adjusted_target = fill_price + (range_size * 0.50)
+                        logger.debug(f"[{name}] Adjusted target for {signal.symbol}: "
+                                   f"${signal.target:.2f} -> ${adjusted_target:.2f} (fill slippage)")
 
                 # Track position
                 self.positions[strategy_type][signal.symbol] = Position(
@@ -489,16 +535,21 @@ class IntradayBot:
                     entry_price=fill_price,
                     entry_time=datetime.now(),
                     strategy=name,
-                    target=signal.target,
-                    stop=signal.stop,
+                    direction=direction,
+                    target=adjusted_target,
+                    stop=adjusted_stop,
                     metadata=signal.metadata or {},
                 )
 
+                # Record trade in ORB V2 daily tracker if applicable
+                if strategy_type == StrategyType.ORB_V2:
+                    self.strategies[strategy_type].record_entry(signal.symbol)
+
                 # Log trade
                 self._log_trade(strategy_type, signal.symbol, 'ENTRY',
-                              filled_qty, fill_price, 0, signal.reason)
+                              filled_qty, fill_price, 0, signal.reason, direction=direction)
 
-                logger.info(f"[{name}] FILLED: {signal.symbol} {filled_qty} @ ${fill_price:.2f}")
+                logger.info(f"[{name}] FILLED: {signal.symbol} {filled_qty} @ ${fill_price:.2f} ({direction})")
                 return True
             else:
                 logger.error(f"[{name}] Order failed for {signal.symbol}")
@@ -530,9 +581,13 @@ class IntradayBot:
             result = client.close_position(symbol)
 
             if result:
-                # Calculate P&L
+                # Calculate P&L based on direction
                 exit_price = signal.price
-                pnl = (exit_price - position.entry_price) * position.shares
+                if position.direction == 'long':
+                    pnl = (exit_price - position.entry_price) * position.shares
+                else:
+                    pnl = (position.entry_price - exit_price) * position.shares
+
                 hold_minutes = (datetime.now() - position.entry_time).total_seconds() / 60
 
                 # Update session P&L
@@ -541,13 +596,13 @@ class IntradayBot:
                 # Log trade
                 self._log_trade(strategy_type, symbol, 'EXIT',
                               position.shares, exit_price, pnl, signal.reason,
-                              hold_minutes=hold_minutes)
+                              hold_minutes=hold_minutes, direction=position.direction)
 
                 # Remove from tracking
                 del positions[symbol]
 
                 logger.info(f"[{name}] CLOSED: {symbol} P&L: ${pnl:+.2f} "
-                           f"(held {hold_minutes:.0f} min)")
+                           f"(held {hold_minutes:.0f} min, {position.direction})")
                 return True
             else:
                 logger.error(f"[{name}] Failed to close {symbol}")
@@ -563,7 +618,7 @@ class IntradayBot:
 
     def _log_trade(self, strategy_type: StrategyType, symbol: str, action: str,
                    shares: int, price: float, pnl: float, reason: str,
-                   hold_minutes: float = 0):
+                   hold_minutes: float = 0, direction: str = 'long'):
         """Log a trade to the CSV journal."""
         name = strategy_type.value.lower()
         journal_file = LOG_DIR / f"trade_journal_{name}.csv"
@@ -573,7 +628,7 @@ class IntradayBot:
             with open(journal_file, 'w', newline='') as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    'timestamp', 'symbol', 'action', 'shares', 'price',
+                    'timestamp', 'symbol', 'action', 'direction', 'shares', 'price',
                     'pnl', 'reason', 'hold_minutes'
                 ])
 
@@ -584,6 +639,7 @@ class IntradayBot:
                 datetime.now().isoformat(),
                 symbol,
                 action,
+                direction,
                 shares,
                 f"{price:.2f}",
                 f"{pnl:.2f}",
@@ -597,8 +653,8 @@ class IntradayBot:
 
         self.console.info("")
         self.console.info("CYCLE SUMMARY:")
-        self.console.info(f"{'Strategy':<12} {'Positions':<10} {'Session P&L':<15}")
-        self.console.info("-" * 40)
+        self.console.info(f"{'Strategy':<20} {'Positions':<10} {'Session P&L':<15}")
+        self.console.info("-" * 50)
 
         total_pnl = 0
         for strategy_type in StrategyType:
@@ -606,10 +662,10 @@ class IntradayBot:
             pos_count = len(self.positions[strategy_type])
             pnl = self.session_pnl[strategy_type]
             total_pnl += pnl
-            self.console.info(f"{name:<12} {pos_count:<10} ${pnl:>+12,.2f}")
+            self.console.info(f"{name:<20} {pos_count:<10} ${pnl:>+12,.2f}")
 
-        self.console.info("-" * 40)
-        self.console.info(f"{'TOTAL':<12} {'':<10} ${total_pnl:>+12,.2f}")
+        self.console.info("-" * 50)
+        self.console.info(f"{'TOTAL':<20} {'':<10} ${total_pnl:>+12,.2f}")
         self.console.info(f"Cycle duration: {cycle_duration:.1f}s")
 
     def _log_end_of_day(self):
@@ -640,14 +696,14 @@ class IntradayBot:
     def wait_for_market_open(self):
         """Wait until market opens (blocks until market is open)."""
         while self.running:
-            now = datetime.now()
+            now_et = datetime.now(ET)
 
             # Check if it's a weekend
-            if now.weekday() >= 5:
+            if now_et.weekday() >= 5:
                 self.console.info("Weekend detected. Market closed until Monday.")
                 return False
 
-            current_time = now.time()
+            current_time = now_et.time()
 
             if current_time >= MARKET_CLOSE:
                 self.console.info("Market closed for today.")
@@ -658,7 +714,8 @@ class IntradayBot:
                 return True
 
             # Before market open - wait
-            wait_seconds = (datetime.combine(now.date(), MARKET_OPEN) - now).total_seconds()
+            market_open_dt = now_et.replace(hour=MARKET_OPEN.hour, minute=MARKET_OPEN.minute, second=0, microsecond=0)
+            wait_seconds = (market_open_dt - now_et).total_seconds()
             wait_minutes = wait_seconds / 60
 
             if wait_minutes > 1:
@@ -672,11 +729,11 @@ class IntradayBot:
         return False
 
     def is_market_hours(self) -> bool:
-        """Check if we're within market hours."""
-        now = datetime.now()
-        if now.weekday() >= 5:  # Weekend
+        """Check if we're within market hours (Eastern Time)."""
+        now_et = datetime.now(ET)
+        if now_et.weekday() >= 5:  # Weekend
             return False
-        current_time = now.time()
+        current_time = now_et.time()
         return MARKET_OPEN <= current_time < MARKET_CLOSE
 
     def get_sync_file_mtime(self) -> Optional[float]:
@@ -692,9 +749,14 @@ class IntradayBot:
         """Main bot loop."""
         self.console.info("")
         self.console.info("=" * 60)
-        self.console.info("INTRADAY TRADING BOT")
-        self.console.info("3 Strategies | 3 Accounts | Intraday Only")
+        self.console.info("INTRADAY TRADING BOT V2")
+        self.console.info("3 Verified Strategies | 3 Accounts | Intraday Only")
         self.console.info("=" * 60)
+        self.console.info("")
+        self.console.info("Strategies:")
+        self.console.info("  - ORB_V2: Simplified ORB (74.56% WR, 2.51 PF)")
+        self.console.info("  - OVERNIGHT_REVERSAL: Buy gap-downs (Sharpe 4.44)")
+        self.console.info("  - STOCKS_IN_PLAY: First 5-min candle (Sharpe 2.81)")
         self.console.info("")
 
         # Startup checks
@@ -751,7 +813,7 @@ def main():
     """Main entry point."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Intraday Trading Bot")
+    parser = argparse.ArgumentParser(description="Intraday Trading Bot V2")
     parser.add_argument('--paper', action='store_true', default=True,
                        help="Use paper trading (default: True)")
     parser.add_argument('--live', action='store_true',

@@ -1,15 +1,34 @@
 """
-Intraday Trading Strategies
+Intraday Trading Strategies V2
 
-Three high-win-rate intraday strategies:
-- ORBStrategy: 60-Minute Opening Range Breakout (89.4% win rate)
-- WMAHAStrategy: WMA(20) + Heikin Ashi (83% win rate)
-- HMAHAStrategy: HMA + Heikin Ashi (77% win rate)
+Three verified true intraday strategies:
+- ORBV2Strategy: Simplified ORB (74.56% win rate, 2.51 PF)
+- OvernightReversalStrategy: Buy overnight losers (Sharpe 4.44)
+- StocksInPlayStrategy: First 5-min candle on high-vol stocks (Sharpe 2.81)
+
+All strategies close positions same-day (no overnight holds).
 """
 
-from .base_strategy import BaseStrategy
-from .orb_strategy import ORBStrategy
-from .wma_ha_strategy import WMAHAStrategy
-from .hma_ha_strategy import HMAHAStrategy
+from .base_strategy import BaseStrategy, EntrySignal, ExitSignal
+from .orb_v2_strategy import ORBV2Strategy
+from .overnight_reversal_strategy import OvernightReversalStrategy
+from .stocks_in_play_strategy import StocksInPlayStrategy
 
-__all__ = ['BaseStrategy', 'ORBStrategy', 'WMAHAStrategy', 'HMAHAStrategy']
+# Legacy imports for backward compatibility (will be removed in Phase 7)
+try:
+    from .orb_strategy import ORBStrategy
+    from .wma_ha_strategy import WMAHAStrategy
+    from .hma_ha_strategy import HMAHAStrategy
+except ImportError:
+    ORBStrategy = None
+    WMAHAStrategy = None
+    HMAHAStrategy = None
+
+__all__ = [
+    'BaseStrategy',
+    'EntrySignal',
+    'ExitSignal',
+    'ORBV2Strategy',
+    'OvernightReversalStrategy',
+    'StocksInPlayStrategy',
+]

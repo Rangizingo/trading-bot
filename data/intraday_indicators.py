@@ -15,13 +15,21 @@ Data source: bars_1min table in VV7SimpleBridge intraday.db
 
 import sqlite3
 import os
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time, timezone
 from typing import Dict, List, Optional, Tuple
 from math import sqrt
 from contextlib import contextmanager
 import logging
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
+
 logger = logging.getLogger(__name__)
+
+# Eastern Time zone for market hours
+ET = ZoneInfo('America/New_York')
 
 
 class IntradayIndicators:
@@ -36,6 +44,31 @@ class IntradayIndicators:
     MARKET_OPEN = dt_time(9, 30)
     MARKET_CLOSE = dt_time(16, 0)
     OPENING_RANGE_END = dt_time(10, 30)  # 60-minute opening range
+
+    def _et_to_timestamp(self, date_obj, time_obj) -> int:
+        """
+        Convert a date and time in Eastern Time to a Unix timestamp.
+
+        NOTE: VV7SimpleBridge stores VectorVest's Eastern Time values as UTC
+        (marks ET as DateTimeKind.Utc without conversion). So a 9:30 AM ET bar
+        is stored with timestamp for 9:30 AM UTC. When querying, we must treat
+        the target ET time as if it were UTC to match what's in the database.
+
+        Args:
+            date_obj: date object (or datetime.date())
+            time_obj: time object (e.g., dt_time(9, 30))
+
+        Returns:
+            Unix timestamp (seconds since epoch) - using UTC interpretation
+        """
+        naive_dt = datetime.combine(date_obj, time_obj)
+        # Treat as UTC because VV7 stores ET times marked as UTC
+        utc_aware = naive_dt.replace(tzinfo=timezone.utc)
+        return int(utc_aware.timestamp())
+
+    def _get_current_et(self) -> datetime:
+        """Get current time in Eastern Time as aware datetime."""
+        return datetime.now(ET)
 
     def __init__(self, db_path: Optional[str] = None):
         """
@@ -145,11 +178,10 @@ class IntradayIndicators:
         Returns:
             List of bar dicts from market open to current time
         """
-        # Get today's market open timestamp
-        now = datetime.now()
-        market_open_dt = datetime.combine(now.date(), self.MARKET_OPEN)
-        start_ts = int(market_open_dt.timestamp())
-        end_ts = int(now.timestamp())
+        # Get today's market open timestamp in ET
+        now_et = self._get_current_et()
+        start_ts = self._et_to_timestamp(now_et.date(), self.MARKET_OPEN)
+        end_ts = int(now_et.timestamp())
 
         return self.get_bars(symbol, start_ts, end_ts)
 
@@ -487,14 +519,11 @@ class IntradayIndicators:
             Dict with keys: high, low, range_size, or None if insufficient data
         """
         if date is None:
-            date = datetime.now()
+            date = self._get_current_et()
 
         # Calculate timestamps for opening range window (9:30 - 10:30 ET)
-        market_open_dt = datetime.combine(date.date(), self.MARKET_OPEN)
-        range_end_dt = datetime.combine(date.date(), self.OPENING_RANGE_END)
-
-        start_ts = int(market_open_dt.timestamp())
-        end_ts = int(range_end_dt.timestamp())
+        start_ts = self._et_to_timestamp(date.date(), self.MARKET_OPEN)
+        end_ts = self._et_to_timestamp(date.date(), self.OPENING_RANGE_END)
 
         bars = self.get_bars(symbol, start_ts, end_ts)
 
@@ -575,8 +604,8 @@ class IntradayIndicators:
         Returns:
             Relative volume ratio (1.5 = 150% of average)
         """
-        now = datetime.now()
-        current_time = now.time()
+        now_et = self._get_current_et()
+        current_time = now_et.time()
 
         # Get today's cumulative volume from open to now
         todays_bars = self.get_todays_bars(symbol)
@@ -589,18 +618,15 @@ class IntradayIndicators:
         historical_volumes = []
 
         for days_ago in range(1, lookback_days + 1):
-            past_date = now - timedelta(days=days_ago)
+            past_date = now_et - timedelta(days=days_ago)
 
             # Skip weekends
             if past_date.weekday() >= 5:
                 continue
 
-            # Get bars from market open to same time as current
-            market_open_dt = datetime.combine(past_date.date(), self.MARKET_OPEN)
-            same_time_dt = datetime.combine(past_date.date(), current_time)
-
-            start_ts = int(market_open_dt.timestamp())
-            end_ts = int(same_time_dt.timestamp())
+            # Get bars from market open to same time as current (in ET)
+            start_ts = self._et_to_timestamp(past_date.date(), self.MARKET_OPEN)
+            end_ts = self._et_to_timestamp(past_date.date(), current_time)
 
             bars = self.get_bars(symbol, start_ts, end_ts)
             if bars:
@@ -641,10 +667,10 @@ class IntradayIndicators:
         Returns:
             List of candidate dicts with symbol and indicator data
         """
-        now = datetime.now()
+        now_et = self._get_current_et()
 
-        # Must be after 10:30 AM for ORB
-        if now.time() < self.OPENING_RANGE_END:
+        # Must be after 10:30 AM ET for ORB
+        if now_et.time() < self.OPENING_RANGE_END:
             logger.info("ORB screening: Too early, opening range not established")
             return []
 
@@ -902,3 +928,351 @@ class IntradayIndicators:
                 'min_date': datetime.fromtimestamp(min_ts) if min_ts else None,
                 'max_date': datetime.fromtimestamp(max_ts) if max_ts else None,
             }
+
+    # =========================================================================
+    # 2.0 Overnight-Intraday Reversal Data Methods
+    # =========================================================================
+
+    def get_prior_close(self, symbol: str, for_date: Optional[datetime] = None) -> Optional[float]:
+        """
+        Get the prior day's closing price for a symbol.
+
+        Args:
+            symbol: Stock symbol
+            for_date: Date to get prior close for (defaults to today)
+
+        Returns:
+            Prior day's close price or None if not found
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        # Get today's market open timestamp in ET
+        today_open_ts = self._et_to_timestamp(for_date.date(), self.MARKET_OPEN)
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            # Get the last bar before today's market open
+            cursor.execute("""
+                SELECT close
+                FROM bars_1min
+                WHERE symbol = ? AND timestamp < ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """, (symbol, today_open_ts))
+
+            result = cursor.fetchone()
+            return result[0] if result else None
+
+    def calculate_overnight_return(self, symbol: str, for_date: Optional[datetime] = None) -> Optional[float]:
+        """
+        Calculate overnight return for a symbol.
+
+        Overnight return = (Today's Open - Prior Close) / Prior Close
+
+        Args:
+            symbol: Stock symbol
+            for_date: Date to calculate for (defaults to today)
+
+        Returns:
+            Overnight return as decimal (e.g., -0.02 for -2%) or None if data missing
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        # Get prior close
+        prior_close = self.get_prior_close(symbol, for_date)
+        if prior_close is None or prior_close <= 0:
+            return None
+
+        # Get today's open price (first bar of the day) in ET
+        start_ts = self._et_to_timestamp(for_date.date(), self.MARKET_OPEN)
+        end_ts = start_ts + 60  # First minute
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT open
+                FROM bars_1min
+                WHERE symbol = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                LIMIT 1
+            """, (symbol, start_ts, end_ts))
+
+            result = cursor.fetchone()
+            if not result:
+                return None
+
+            today_open = result[0]
+
+        if today_open is None or today_open <= 0:
+            return None
+
+        return (today_open - prior_close) / prior_close
+
+    def get_overnight_return_deciles(
+        self,
+        min_price: float = 5.0,
+        for_date: Optional[datetime] = None
+    ) -> Tuple[List[Dict], List[Dict]]:
+        """
+        Calculate overnight returns for all symbols and return deciles.
+
+        Args:
+            min_price: Minimum stock price filter
+            for_date: Date to calculate for (defaults to today)
+
+        Returns:
+            Tuple of (bottom_decile, top_decile) where each is a list of dicts
+            with symbol, overnight_return, prior_close, today_open
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        # Get all symbols
+        symbols = self.get_all_symbols()
+        returns_data = []
+
+        for symbol in symbols:
+            try:
+                # Get prior close
+                prior_close = self.get_prior_close(symbol, for_date)
+                if prior_close is None or prior_close < min_price:
+                    continue
+
+                # Get today's open in ET
+                start_ts = self._et_to_timestamp(for_date.date(), self.MARKET_OPEN)
+                end_ts = start_ts + 60
+
+                with self._get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT open
+                        FROM bars_1min
+                        WHERE symbol = ? AND timestamp >= ? AND timestamp <= ?
+                        ORDER BY timestamp ASC
+                        LIMIT 1
+                    """, (symbol, start_ts, end_ts))
+                    result = cursor.fetchone()
+
+                if not result:
+                    continue
+
+                today_open = result[0]
+                if today_open is None or today_open <= 0:
+                    continue
+
+                overnight_return = (today_open - prior_close) / prior_close
+
+                returns_data.append({
+                    'symbol': symbol,
+                    'overnight_return': overnight_return,
+                    'prior_close': prior_close,
+                    'today_open': today_open,
+                })
+
+            except Exception as e:
+                logger.debug(f"Error calculating overnight return for {symbol}: {e}")
+                continue
+
+        if not returns_data:
+            return [], []
+
+        # Sort by overnight return (ascending: biggest losers first)
+        returns_data.sort(key=lambda x: x['overnight_return'])
+
+        # Calculate decile boundaries
+        n = len(returns_data)
+        decile_size = max(1, n // 10)
+
+        bottom_decile = returns_data[:decile_size]  # Biggest losers
+        top_decile = returns_data[-decile_size:]    # Biggest winners
+
+        logger.info(f"Overnight returns calculated for {n} symbols. "
+                   f"Bottom decile: {len(bottom_decile)}, Top decile: {len(top_decile)}")
+
+        return bottom_decile, top_decile
+
+    # =========================================================================
+    # 2.1 Stocks in Play Screening Methods
+    # =========================================================================
+
+    def get_first_5min_candle(self, symbol: str, for_date: Optional[datetime] = None) -> Optional[Dict]:
+        """
+        Get the first 5-minute candle of the trading day (9:30-9:35 AM).
+
+        Args:
+            symbol: Stock symbol
+            for_date: Date to get candle for (defaults to today)
+
+        Returns:
+            Dict with open, high, low, close, volume, is_bullish, is_bearish, is_doji
+            or None if insufficient data
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        # Get bars from 9:30-9:35 AM ET
+        start_ts = self._et_to_timestamp(for_date.date(), self.MARKET_OPEN)
+        end_ts = start_ts + (5 * 60)  # 5 minutes
+
+        bars = self.get_bars(symbol, start_ts, end_ts)
+
+        if not bars:
+            return None
+
+        # Aggregate 1-min bars into 5-min candle
+        candle_open = bars[0]['open']
+        candle_high = max(b['high'] for b in bars)
+        candle_low = min(b['low'] for b in bars)
+        candle_close = bars[-1]['close']
+        candle_volume = sum(b['volume'] for b in bars)
+
+        # Determine candle type
+        price_range = candle_high - candle_low
+        body_size = abs(candle_close - candle_open)
+
+        # Doji: body is less than 10% of range (or very small absolute)
+        is_doji = body_size < (price_range * 0.1) if price_range > 0 else True
+        is_bullish = candle_close > candle_open and not is_doji
+        is_bearish = candle_close < candle_open and not is_doji
+
+        return {
+            'symbol': symbol,
+            'open': candle_open,
+            'high': candle_high,
+            'low': candle_low,
+            'close': candle_close,
+            'volume': candle_volume,
+            'is_bullish': is_bullish,
+            'is_bearish': is_bearish,
+            'is_doji': is_doji,
+            'body_size': body_size,
+            'range_size': price_range,
+        }
+
+    def get_stocks_in_play(
+        self,
+        top_n: int = 20,
+        min_price: float = 5.0,
+        min_avg_volume: int = 1_000_000,
+        min_atr: float = 0.50,
+        for_date: Optional[datetime] = None,
+        historical_data: Optional['HistoricalData'] = None
+    ) -> List[Dict]:
+        """
+        Screen for "Stocks in Play" - high relative volume stocks with momentum.
+
+        Criteria:
+        - Price > min_price
+        - 20-day average volume > min_avg_volume
+        - 14-day ATR > min_atr
+        - Sorted by relative volume (highest first)
+
+        Args:
+            top_n: Number of stocks to return
+            min_price: Minimum stock price
+            min_avg_volume: Minimum 20-day average volume
+            min_atr: Minimum 14-day ATR
+            for_date: Date to screen for (defaults to today)
+            historical_data: HistoricalData instance for ATR/volume (optional)
+
+        Returns:
+            List of dicts with symbol and screening data, sorted by relative volume
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        symbols = self.get_all_symbols()
+        candidates = []
+
+        for symbol in symbols:
+            try:
+                # Get current price
+                bars = self.get_latest_bars(symbol, 10)
+                if not bars:
+                    continue
+
+                current_price = bars[-1]['close']
+                if current_price < min_price:
+                    continue
+
+                # Calculate relative volume from local data
+                rel_vol = self.calculate_relative_volume(symbol, lookback_days=5)
+                if rel_vol is None:
+                    continue
+
+                # If historical_data provided, use it for ATR and avg volume
+                avg_volume = None
+                atr = None
+
+                if historical_data:
+                    try:
+                        avg_volume = historical_data.get_average_volume(symbol, period=20)
+                        atr = historical_data.get_atr(symbol, period=14)
+                    except Exception:
+                        pass
+
+                # For now, if no historical_data, use simplified screening
+                # based just on relative volume and price
+                if avg_volume is not None and avg_volume < min_avg_volume:
+                    continue
+                if atr is not None and atr < min_atr:
+                    continue
+
+                candidates.append({
+                    'symbol': symbol,
+                    'price': current_price,
+                    'relative_volume': rel_vol,
+                    'avg_volume': avg_volume,
+                    'atr': atr,
+                })
+
+            except Exception as e:
+                logger.debug(f"Error screening {symbol} for stocks in play: {e}")
+                continue
+
+        # Sort by relative volume (highest first)
+        candidates.sort(key=lambda x: x['relative_volume'], reverse=True)
+
+        return candidates[:top_n]
+
+    def get_stocks_in_play_with_candles(
+        self,
+        top_n: int = 20,
+        min_price: float = 5.0,
+        for_date: Optional[datetime] = None
+    ) -> List[Dict]:
+        """
+        Get Stocks in Play with their first 5-minute candle analysis.
+
+        Returns candidates with bullish/bearish first candle signals.
+
+        Returns:
+            List of dicts with symbol, screening data, and first candle analysis
+        """
+        stocks_in_play = self.get_stocks_in_play(
+            top_n=top_n * 2,  # Get more to filter
+            min_price=min_price,
+            for_date=for_date
+        )
+
+        candidates = []
+
+        for stock in stocks_in_play:
+            first_candle = self.get_first_5min_candle(stock['symbol'], for_date)
+            if first_candle is None:
+                continue
+
+            # Skip doji candles (no clear direction)
+            if first_candle['is_doji']:
+                continue
+
+            stock['first_candle'] = first_candle
+            stock['direction'] = 'long' if first_candle['is_bullish'] else 'short'
+            candidates.append(stock)
+
+            if len(candidates) >= top_n:
+                break
+
+        return candidates
