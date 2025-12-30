@@ -8,10 +8,11 @@ Entry Conditions (All Required):
 - Heikin Ashi close crosses ABOVE Hull Moving Average (HMA)
 - Current HA candle is GREEN
 
-Exit Conditions (First Triggered):
-- Heikin Ashi close crosses BELOW HMA
-- Color change (green -> red Heikin Ashi)
-- EOD: 3:45 PM ET forced exit
+Exit Conditions (require 2-candle confirmation except stops):
+- HA close BELOW HMA for 2 consecutive candles
+- 2 consecutive RED Heikin Ashi candles
+- Stop loss at -3% (immediate)
+- EOD: 3:45 PM ET forced exit (immediate)
 
 HMA Formula:
 HMA = WMA(2 * WMA(n/2) - WMA(n), sqrt(n))
@@ -157,10 +158,11 @@ class HMAHAStrategy(BaseStrategy):
         """
         Check if position should be exited.
 
-        Exit Conditions:
-        1. HA close < HMA
-        2. HA color changed to red
-        3. Time >= 3:45 PM ET
+        Exit Conditions (require 2 consecutive candle confirmation):
+        1. HA close < HMA for 2 candles
+        2. 2 consecutive red HA candles
+        3. Time >= 3:45 PM ET (immediate)
+        4. Stop loss at -3% (immediate)
 
         Args:
             position: Dict with keys: entry_price, shares, entry_time
@@ -179,7 +181,7 @@ class HMAHAStrategy(BaseStrategy):
         entry_price = position.get('entry_price', 0)
         pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
 
-        # Condition 1: EOD exit time
+        # Condition 1: EOD exit time (immediate)
         if now.time() >= self.eod_exit_time:
             return ExitSignal(
                 symbol=symbol,
@@ -189,39 +191,57 @@ class HMAHAStrategy(BaseStrategy):
                 metadata={'eod_time': str(self.eod_exit_time)}
             )
 
+        # Condition 2: Stop loss at -3% (immediate)
+        if pnl_pct <= -3.0:
+            return ExitSignal(
+                symbol=symbol,
+                price=current_price,
+                reason='stop',
+                pnl_pct=pnl_pct,
+                metadata={'reason': 'Stop loss triggered at -3%'}
+            )
+
         # Calculate HMA
         prices = [b['close'] for b in bars]
         hma_values = self.indicators.calculate_hma(prices, self.hma_period)
-        current_hma = hma_values[-1] if hma_values else None
 
-        if current_hma is None:
+        if len(hma_values) < 2:
+            return None
+
+        current_hma = hma_values[-1]
+        prev_hma = hma_values[-2]
+
+        if current_hma is None or prev_hma is None:
             return None
 
         # Calculate Heikin Ashi
         ha_candles = self.indicators.calculate_heikin_ashi(bars)
-        if not ha_candles:
+        if len(ha_candles) < 2:
             return None
 
         ha_current = ha_candles[-1]
+        ha_prev = ha_candles[-2]
 
-        # Condition 2: HA close < HMA
-        if ha_current['ha_close'] < current_hma:
+        # Condition 3: HA close < HMA for 2 consecutive candles
+        if (ha_current['ha_close'] < current_hma and
+            ha_prev['ha_close'] < prev_hma):
             return ExitSignal(
                 symbol=symbol,
                 price=current_price,
                 reason='signal',
                 pnl_pct=pnl_pct,
-                metadata={'reason': 'HA close below HMA', 'hma': current_hma}
+                metadata={'reason': 'HA close below HMA for 2 candles', 'hma': current_hma}
             )
 
-        # Condition 3: HA color changed to red
-        if self.indicators.is_red_ha(ha_current):
+        # Condition 4: 2 consecutive red HA candles
+        if (self.indicators.is_red_ha(ha_current) and
+            self.indicators.is_red_ha(ha_prev)):
             return ExitSignal(
                 symbol=symbol,
                 price=current_price,
                 reason='signal',
                 pnl_pct=pnl_pct,
-                metadata={'reason': 'HA color changed to red'}
+                metadata={'reason': '2 consecutive red HA candles'}
             )
 
         return None

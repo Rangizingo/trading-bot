@@ -9,11 +9,11 @@ Entry Conditions (All Required):
 - Last 2 HA candles are GREEN
 - Last 2 HA candles are "flat-bottomed" (no lower wick)
 
-Exit Conditions (First Triggered):
-- Heikin Ashi close crosses BELOW WMA(20)
-- Color change (green -> red Heikin Ashi)
-- Lower wick appears on HA candle
-- EOD: 3:45 PM ET forced exit
+Exit Conditions (require 2-candle confirmation except stops):
+- HA close BELOW WMA(20) for 2 consecutive candles
+- 2 consecutive RED Heikin Ashi candles
+- Stop loss at -3% (immediate)
+- EOD: 3:45 PM ET forced exit (immediate)
 """
 
 from typing import Dict, List, Optional
@@ -165,11 +165,11 @@ class WMAHAStrategy(BaseStrategy):
         """
         Check if position should be exited.
 
-        Exit Conditions:
-        1. HA close < WMA(20)
-        2. HA color changed to red
-        3. Lower wick appeared on HA candle
-        4. Time >= 3:45 PM ET
+        Exit Conditions (require 2 consecutive candle confirmation):
+        1. HA close < WMA(20) for 2 candles
+        2. 2 consecutive red HA candles
+        3. Time >= 3:45 PM ET (immediate)
+        4. Stop loss at -3% (immediate)
 
         Args:
             position: Dict with keys: entry_price, shares, entry_time
@@ -188,7 +188,7 @@ class WMAHAStrategy(BaseStrategy):
         entry_price = position.get('entry_price', 0)
         pnl_pct = ((current_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
 
-        # Condition 1: EOD exit time
+        # Condition 1: EOD exit time (immediate)
         if now.time() >= self.eod_exit_time:
             return ExitSignal(
                 symbol=symbol,
@@ -198,55 +198,58 @@ class WMAHAStrategy(BaseStrategy):
                 metadata={'eod_time': str(self.eod_exit_time)}
             )
 
+        # Condition 2: Stop loss at -3% (immediate)
+        if pnl_pct <= -3.0:
+            return ExitSignal(
+                symbol=symbol,
+                price=current_price,
+                reason='stop',
+                pnl_pct=pnl_pct,
+                metadata={'reason': 'Stop loss triggered at -3%'}
+            )
+
         # Calculate WMA(20)
         prices = [b['close'] for b in bars]
         wma_values = self.indicators.calculate_wma(prices, self.wma_period)
-        current_wma = wma_values[-1] if wma_values else None
 
-        if current_wma is None:
+        if len(wma_values) < 2:
+            return None
+
+        current_wma = wma_values[-1]
+        prev_wma = wma_values[-2]
+
+        if current_wma is None or prev_wma is None:
             return None
 
         # Calculate Heikin Ashi
         ha_candles = self.indicators.calculate_heikin_ashi(bars)
-        if not ha_candles:
+        if len(ha_candles) < 2:
             return None
 
         ha_current = ha_candles[-1]
+        ha_prev = ha_candles[-2]
 
-        # Condition 2: HA close < WMA(20)
-        if ha_current['ha_close'] < current_wma:
+        # Condition 3: HA close < WMA(20) for 2 consecutive candles
+        if (ha_current['ha_close'] < current_wma and
+            ha_prev['ha_close'] < prev_wma):
             return ExitSignal(
                 symbol=symbol,
                 price=current_price,
                 reason='signal',
                 pnl_pct=pnl_pct,
-                metadata={'reason': 'HA close below WMA(20)', 'wma20': current_wma}
+                metadata={'reason': 'HA close below WMA(20) for 2 candles', 'wma20': current_wma}
             )
 
-        # Condition 3: HA color changed to red
-        if self.indicators.is_red_ha(ha_current):
+        # Condition 4: 2 consecutive red HA candles
+        if (self.indicators.is_red_ha(ha_current) and
+            self.indicators.is_red_ha(ha_prev)):
             return ExitSignal(
                 symbol=symbol,
                 price=current_price,
                 reason='signal',
                 pnl_pct=pnl_pct,
-                metadata={'reason': 'HA color changed to red'}
+                metadata={'reason': '2 consecutive red HA candles'}
             )
-
-        # Condition 4: Lower wick appeared (no longer flat-bottomed)
-        if not self.indicators.is_flat_bottom_ha(ha_current):
-            # Only exit if we previously had flat-bottom candles
-            # Check if previous candle was flat-bottom (momentum fading)
-            if len(ha_candles) >= 2:
-                ha_prev = ha_candles[-2]
-                if self.indicators.is_flat_bottom_ha(ha_prev):
-                    return ExitSignal(
-                        symbol=symbol,
-                        price=current_price,
-                        reason='signal',
-                        pnl_pct=pnl_pct,
-                        metadata={'reason': 'Lower wick appeared (momentum fading)'}
-                    )
 
         return None
 
