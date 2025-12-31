@@ -142,6 +142,10 @@ class IntradayBot:
         self.session_pnl: Dict[StrategyType, float] = {}
         self.historical_data: Optional[HistoricalData] = None
 
+        # Track which strategies have had EOD exits triggered today
+        # This prevents repeated exit attempts and allows safety EOD logic
+        self._eod_exits_triggered: Dict[StrategyType, datetime] = {}
+
         self._init_orb_v2(paper)
         self._init_overnight_reversal(paper)
         self._init_stocks_in_play(paper)
@@ -474,6 +478,39 @@ class IntradayBot:
             )
             self._execute_exit(strategy_type, symbol, exit_signal)
 
+    def _check_safety_eod_exits(self):
+        """
+        Safety check for EOD exits - runs every loop iteration.
+
+        This ensures positions are closed at EOD even if the sync file
+        doesn't update. Prevents positions from being held overnight.
+        """
+        now_et = datetime.now(ET)
+        today = now_et.date()
+
+        for strategy_type in StrategyType:
+            config = STRATEGY_CONFIG[strategy_type]
+            eod_time = config["eod_exit_time"]
+
+            # Skip if not past EOD time yet
+            if now_et.time() < eod_time:
+                continue
+
+            # Skip if we already triggered EOD exit for this strategy today
+            if strategy_type in self._eod_exits_triggered:
+                if self._eod_exits_triggered[strategy_type].date() == today:
+                    continue
+
+            # We're past EOD time and haven't triggered exits today
+            positions = self.positions[strategy_type]
+            if positions:
+                name = strategy_type.value.upper()
+                self.console.info(f"[{name}] SAFETY EOD EXIT: Time {now_et.time()} >= {eod_time}")
+                self._force_eod_exits(strategy_type)
+
+            # Mark as triggered for today (even if no positions)
+            self._eod_exits_triggered[strategy_type] = now_et
+
     def _execute_entry(self, strategy_type: StrategyType, signal: EntrySignal) -> bool:
         """Execute an entry order."""
         name = strategy_type.value.upper()
@@ -795,6 +832,10 @@ class IntradayBot:
 
         while self.running and self.is_market_hours():
             try:
+                # Safety EOD check - runs every iteration regardless of sync
+                # This ensures positions are closed even if VV7 stops syncing
+                self._check_safety_eod_exits()
+
                 # Check for sync file update
                 current_mtime = self.get_sync_file_mtime()
 
