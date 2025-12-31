@@ -64,7 +64,7 @@ class StocksInPlayStrategy(BaseStrategy):
     # Strategy-specific constants
     MARKET_OPEN = dt_time(9, 30)
     ENTRY_WINDOW_START = dt_time(9, 35)  # After first 5-min candle
-    ENTRY_WINDOW_END = dt_time(9, 40)    # 5-minute window for entries
+    ENTRY_WINDOW_END = dt_time(9, 50)    # 15-minute window for entries (widened from 9:40)
     MARKET_CLOSE = dt_time(16, 0)
     ATR_STOP_MULTIPLIER = 0.10  # 10% of ATR
 

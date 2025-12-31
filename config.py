@@ -50,7 +50,7 @@ STRATEGY_CONFIG = {
         "position_size_pct": 0.10,
         "risk_per_trade_pct": 0.10,  # No stops, higher risk allocation
         "eod_exit_time": time(16, 0),  # 4:00 PM ET (market close)
-        "entry_window_end": time(9, 35),  # Entries only 9:30-9:35 AM
+        "entry_window_end": time(9, 45),  # Entries 9:30-9:45 AM (widened from 9:35)
         "no_stops": True,  # Strategy has no stop loss
         "description": "Buy bottom decile of overnight losers at open, sell at close",
     },
@@ -63,7 +63,7 @@ STRATEGY_CONFIG = {
         "risk_per_trade_pct": 0.02,
         "eod_exit_time": time(16, 0),  # 4:00 PM ET
         "entry_window_start": time(9, 35),  # After first 5-min candle
-        "entry_window_end": time(9, 40),
+        "entry_window_end": time(9, 50),  # Widened from 9:40 to 9:50
         "atr_stop_pct": 0.10,  # 10% of ATR for stops
         "min_avg_volume": 1_000_000,
         "min_atr": 0.50,

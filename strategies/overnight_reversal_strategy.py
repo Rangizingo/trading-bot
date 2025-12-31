@@ -59,7 +59,7 @@ class OvernightReversalStrategy(BaseStrategy):
 
     # Strategy-specific constants
     MARKET_OPEN = dt_time(9, 30)
-    ENTRY_WINDOW_END = dt_time(9, 35)  # 5-minute window for entries
+    ENTRY_WINDOW_END = dt_time(9, 45)  # 15-minute window for entries (widened from 9:35)
     MARKET_CLOSE = dt_time(16, 0)  # 4:00 PM ET
 
     def __init__(
