@@ -612,8 +612,10 @@ class IntradayBot:
             result = client.close_position(symbol)
 
             if result:
-                # Calculate P&L based on direction
-                exit_price = signal.price
+                # Use actual fill price from Alpaca, fallback to signal price
+                exit_price = result.get('fill_price') or signal.price
+
+                # Calculate P&L based on direction using ACTUAL fill price
                 if position.direction == 'long':
                     pnl = (exit_price - position.entry_price) * position.shares
                 else:
@@ -624,7 +626,7 @@ class IntradayBot:
                 # Update session P&L
                 self.session_pnl[strategy_type] += pnl
 
-                # Log trade
+                # Log trade with actual fill price
                 self._log_trade(strategy_type, symbol, 'EXIT',
                               position.shares, exit_price, pnl, signal.reason,
                               hold_minutes=hold_minutes, direction=position.direction)
@@ -632,7 +634,7 @@ class IntradayBot:
                 # Remove from tracking
                 del positions[symbol]
 
-                logger.info(f"[{name}] CLOSED: {symbol} P&L: ${pnl:+.2f} "
+                logger.info(f"[{name}] CLOSED: {symbol} @ ${exit_price:.2f} P&L: ${pnl:+.2f} "
                            f"(held {hold_minutes:.0f} min, {position.direction})")
                 return True
             else:

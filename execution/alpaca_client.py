@@ -285,7 +285,7 @@ class AlpacaClient:
             logger.error(f"Unexpected error submitting sell order for {symbol}: {e}")
             return None
 
-    def close_position(self, symbol: str) -> bool:
+    def close_position(self, symbol: str) -> Optional[Dict]:
         """
         Close entire position for a symbol.
 
@@ -296,7 +296,7 @@ class AlpacaClient:
             symbol: Stock symbol to close.
 
         Returns:
-            True if position was successfully closed, False otherwise.
+            Dict with fill info {'fill_price': float, 'qty': int} or None if failed.
         """
         try:
             # First, cancel any existing orders for this symbol to free up shares
@@ -307,18 +307,33 @@ class AlpacaClient:
                 logger.info(f"Waiting 1 second for order cancellations to process...")
                 time.sleep(1.0)
 
-            # Now close the position
-            self.client.close_position(symbol)
+            # Now close the position - returns an Order object
+            order = self.client.close_position(symbol)
 
-            logger.info(f"Position closed successfully: {symbol}")
-            return True
+            # Wait for fill and get actual fill price
+            fill_price = None
+            filled_qty = 0
+            for _ in range(10):  # Wait up to 5 seconds
+                time.sleep(0.5)
+                updated_order = self.client.get_order_by_id(order.id)
+                if updated_order.status == 'filled':
+                    fill_price = float(updated_order.filled_avg_price)
+                    filled_qty = int(float(updated_order.filled_qty))
+                    break
+
+            if fill_price:
+                logger.info(f"Position closed: {symbol} @ ${fill_price:.2f}")
+                return {'fill_price': fill_price, 'qty': filled_qty}
+            else:
+                logger.warning(f"Position close order submitted but fill price unknown: {symbol}")
+                return {'fill_price': None, 'qty': 0}
 
         except APIError as e:
             logger.error(f"Failed to close position for {symbol}: {e}")
-            return False
+            return None
         except Exception as e:
             logger.error(f"Unexpected error closing position for {symbol}: {e}")
-            return False
+            return None
 
     def submit_simple_order(self, symbol: str, qty: int, side: str = 'buy') -> Optional[Dict]:
         """
