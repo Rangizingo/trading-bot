@@ -398,8 +398,14 @@ class IntradayBot:
         # Check EOD exit time (in ET)
         now_et = datetime.now(ET)
         if now_et.time() >= config["eod_exit_time"]:
-            self._force_eod_exits(strategy_type)
-            return  # No new entries after EOD exit time
+            # Only force EOD exits if the strategy requires it
+            # Some strategies (like VWAP_RSI2_SWING) hold overnight
+            if strategy.should_force_eod_exit():
+                self._force_eod_exits(strategy_type)
+                return  # No new entries after EOD exit time
+            else:
+                logger.info(f"[{name}] Past EOD time but strategy holds overnight - skipping forced exits")
+                return  # Still no new entries after EOD time
 
         # Check exits
         exits_executed = 0
