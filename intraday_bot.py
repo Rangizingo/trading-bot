@@ -531,8 +531,8 @@ class IntradayBot:
             side = 'buy' if direction == 'long' else 'sell'
 
             # Submit order
-            logger.info(f"[{name}] ENTRY: {signal.symbol} {side} {shares} shares @ ~${signal.price:.2f}")
-            self.console.info(f"[{name}] ENTRY: {signal.symbol} {side.upper()} {shares} shares @ ~${signal.price:.2f}")
+            logger.info(f"[{name}] SUBMITTING: {signal.symbol} {side} {shares} shares (signal ~${signal.price:.2f})")
+            self.console.info(f"[{name}] SUBMITTING: {signal.symbol} {side.upper()} {shares} shares (signal ~${signal.price:.2f})")
 
             result = client.submit_simple_order(signal.symbol, shares, side=side)
 
@@ -580,7 +580,14 @@ class IntradayBot:
                 self._log_trade(strategy_type, signal.symbol, 'ENTRY',
                               filled_qty, fill_price, 0, signal.reason, direction=direction)
 
-                logger.info(f"[{name}] FILLED: {signal.symbol} {filled_qty} @ ${fill_price:.2f} ({direction})")
+                # Calculate and log slippage
+                slippage_dollars = fill_price - signal.price
+                slippage_pct = (slippage_dollars / signal.price) * 100
+                logger.info(f"[{name}] ENTRY FILLED: {signal.symbol} {filled_qty} @ ${fill_price:.2f} ({direction})")
+                logger.info(f"[{name}] Slippage: ${slippage_dollars:+.2f} ({slippage_pct:+.2f}%) "
+                           f"[signal=${signal.price:.2f}, fill=${fill_price:.2f}]")
+                self.console.info(f"[{name}] ENTRY FILLED: {signal.symbol} {filled_qty} @ ${fill_price:.2f} "
+                                 f"(slippage {slippage_pct:+.2f}%)")
                 return True
             else:
                 logger.error(f"[{name}] Order failed for {signal.symbol}")
@@ -634,8 +641,13 @@ class IntradayBot:
                 # Remove from tracking
                 del positions[symbol]
 
+                # Calculate and log slippage
+                slippage_dollars = exit_price - signal.price
+                slippage_pct = (slippage_dollars / signal.price) * 100 if signal.price > 0 else 0
                 logger.info(f"[{name}] CLOSED: {symbol} @ ${exit_price:.2f} P&L: ${pnl:+.2f} "
                            f"(held {hold_minutes:.0f} min, {position.direction})")
+                logger.info(f"[{name}] Slippage: ${slippage_dollars:+.2f} ({slippage_pct:+.2f}%) "
+                           f"[signal=${signal.price:.2f}, fill=${exit_price:.2f}]")
                 return True
             else:
                 logger.error(f"[{name}] Failed to close {symbol}")
