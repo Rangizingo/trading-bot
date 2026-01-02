@@ -1276,3 +1276,364 @@ class IntradayIndicators:
                 break
 
         return candidates
+
+    # =========================================================================
+    # 3.0 Gap Calculator Methods
+    # =========================================================================
+
+    def get_overnight_gap(self, symbol: str, for_date: Optional[datetime] = None) -> Optional[Dict]:
+        """
+        Calculate overnight gap for a symbol (today open vs yesterday close).
+
+        The gap percentage represents how much the stock gapped up or down
+        from yesterday's close to today's open.
+
+        Args:
+            symbol: Stock symbol
+            for_date: Date to calculate gap for (defaults to today)
+
+        Returns:
+            Dict with: gap_pct, prev_close, today_open, direction ('up' or 'down')
+            or None if data missing
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        # Get prior close
+        prev_close = self.get_prior_close(symbol, for_date)
+        if prev_close is None or prev_close <= 0:
+            logger.debug(f"No prior close found for {symbol}")
+            return None
+
+        # Get today's open price (first bar of the day)
+        start_ts = self._et_to_timestamp(for_date.date(), self.MARKET_OPEN)
+        end_ts = start_ts + 60  # First minute
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT open
+                FROM bars_1min
+                WHERE symbol = ? AND timestamp >= ? AND timestamp <= ?
+                ORDER BY timestamp ASC
+                LIMIT 1
+            """, (symbol, start_ts, end_ts))
+
+            result = cursor.fetchone()
+            if not result:
+                logger.debug(f"No today's open found for {symbol}")
+                return None
+
+            today_open = result[0]
+
+        if today_open is None or today_open <= 0:
+            return None
+
+        # Calculate gap percentage
+        gap_pct = (today_open - prev_close) / prev_close * 100
+        direction = 'up' if gap_pct > 0 else 'down'
+
+        return {
+            'symbol': symbol,
+            'gap_pct': gap_pct,
+            'prev_close': prev_close,
+            'today_open': today_open,
+            'direction': direction,
+        }
+
+    def get_gap_up_stocks(self, min_gap_pct: float = 4.0, min_price: float = 5.0,
+                          for_date: Optional[datetime] = None) -> List[Dict]:
+        """
+        Get all stocks gapping UP more than threshold (for long-only strategy).
+
+        Scans all symbols in the database and returns those with gap up
+        greater than min_gap_pct.
+
+        Args:
+            min_gap_pct: Minimum gap percentage (e.g., 4.0 = 4%)
+            min_price: Minimum stock price filter
+            for_date: Date to check gaps for (defaults to today)
+
+        Returns:
+            List of {symbol, gap_pct, today_open, prev_close} sorted by gap_pct descending
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        symbols = self.get_all_symbols()
+        gap_ups = []
+
+        for symbol in symbols:
+            try:
+                gap_data = self.get_overnight_gap(symbol, for_date)
+                if gap_data is None:
+                    continue
+
+                # Filter: must be gap up, above threshold, and meet price minimum
+                if gap_data['direction'] != 'up':
+                    continue
+                if gap_data['gap_pct'] < min_gap_pct:
+                    continue
+                if gap_data['today_open'] < min_price:
+                    continue
+
+                gap_ups.append({
+                    'symbol': symbol,
+                    'gap_pct': gap_data['gap_pct'],
+                    'today_open': gap_data['today_open'],
+                    'prev_close': gap_data['prev_close'],
+                })
+
+            except Exception as e:
+                logger.debug(f"Error calculating gap for {symbol}: {e}")
+                continue
+
+        # Sort by gap percentage descending (biggest gaps first)
+        gap_ups.sort(key=lambda x: x['gap_pct'], reverse=True)
+
+        logger.info(f"Found {len(gap_ups)} stocks gapping up >= {min_gap_pct}%")
+        return gap_ups
+
+    # =========================================================================
+    # 3.1 15-Minute Opening Range
+    # =========================================================================
+
+    def get_opening_range_15min(self, symbol: str, date: Optional[datetime] = None) -> Optional[Dict]:
+        """
+        Calculate the 15-minute opening range for a symbol (9:30-9:45 AM).
+
+        This is different from the existing 60-minute opening range method.
+        The 15-minute range is used for faster gap-and-go strategies.
+
+        Args:
+            symbol: Stock symbol
+            date: Date to calculate for (defaults to today)
+
+        Returns:
+            Dict with: high, low, range_size, range_pct, mid, bar_count
+            or None if insufficient data
+        """
+        if date is None:
+            date = self._get_current_et()
+
+        # Calculate timestamps for 15-minute opening range window (9:30 - 9:45 ET)
+        start_ts = self._et_to_timestamp(date.date(), self.MARKET_OPEN)
+        end_time = dt_time(9, 45)
+        end_ts = self._et_to_timestamp(date.date(), end_time)
+
+        bars = self.get_bars(symbol, start_ts, end_ts)
+
+        if not bars:
+            logger.debug(f"No bars found for {symbol} in 15-min opening range")
+            return None
+
+        or_high = max(bar['high'] for bar in bars)
+        or_low = min(bar['low'] for bar in bars)
+        or_size = or_high - or_low
+        or_mid = (or_high + or_low) / 2
+
+        # Calculate range as percentage of the midpoint
+        or_pct = (or_size / or_mid * 100) if or_mid > 0 else 0
+
+        return {
+            'high': or_high,
+            'low': or_low,
+            'range_size': or_size,
+            'range_pct': or_pct,
+            'mid': or_mid,
+            'bar_count': len(bars),
+            'start_ts': start_ts,
+            'end_ts': end_ts,
+        }
+
+    # =========================================================================
+    # 3.2 VWAP with Deviation Bands
+    # =========================================================================
+
+    def get_vwap_with_bands(self, symbol: str, for_date: Optional[datetime] = None) -> Optional[Dict]:
+        """
+        Get VWAP with +/- 1 standard deviation bands.
+
+        The bands are calculated as the standard deviation of the difference
+        between typical price and VWAP throughout the day.
+
+        Args:
+            symbol: Stock symbol
+            for_date: Date to calculate for (defaults to today)
+
+        Returns:
+            Dict with: vwap, upper_band, lower_band, std_dev, current_price
+            or None if insufficient data
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        # Get today's bars
+        start_ts = self._et_to_timestamp(for_date.date(), self.MARKET_OPEN)
+        # Use current time as end
+        now_et = self._get_current_et()
+        # Convert current ET time to timestamp using same method as database
+        end_ts = self._et_to_timestamp(now_et.date(), now_et.time())
+
+        bars = self.get_bars(symbol, start_ts, end_ts)
+
+        if not bars or len(bars) < 5:
+            logger.debug(f"Insufficient bars for VWAP bands: {symbol}")
+            return None
+
+        # Calculate VWAP
+        cumulative_tp_volume = 0.0
+        cumulative_volume = 0
+        typical_prices = []
+        vwap_at_bar = []
+
+        for bar in bars:
+            typical_price = (bar['high'] + bar['low'] + bar['close']) / 3
+            typical_prices.append(typical_price)
+
+            cumulative_tp_volume += typical_price * bar['volume']
+            cumulative_volume += bar['volume']
+
+            if cumulative_volume > 0:
+                vwap = cumulative_tp_volume / cumulative_volume
+            else:
+                vwap = typical_price
+
+            vwap_at_bar.append(vwap)
+
+        # Final VWAP
+        final_vwap = vwap_at_bar[-1] if vwap_at_bar else None
+        if final_vwap is None:
+            return None
+
+        # Calculate standard deviation of (typical_price - vwap)
+        deviations = []
+        for i, tp in enumerate(typical_prices):
+            deviation = tp - vwap_at_bar[i]
+            deviations.append(deviation ** 2)
+
+        if not deviations:
+            return None
+
+        variance = sum(deviations) / len(deviations)
+        std_dev = sqrt(variance)
+
+        # Calculate bands
+        upper_band = final_vwap + std_dev
+        lower_band = final_vwap - std_dev
+
+        # Get current price
+        current_price = bars[-1]['close']
+
+        return {
+            'vwap': final_vwap,
+            'upper_band': upper_band,
+            'lower_band': lower_band,
+            'std_dev': std_dev,
+            'current_price': current_price,
+            'bar_count': len(bars),
+        }
+
+    # =========================================================================
+    # 3.3 Premarket Volume Methods
+    # =========================================================================
+
+    def get_premarket_volume(self, symbol: str, for_date: Optional[datetime] = None) -> Optional[int]:
+        """
+        Get pre-market volume (4:00 AM - 9:30 AM).
+
+        Falls back to first 5-min volume if premarket data not available
+        in the database.
+
+        Args:
+            symbol: Stock symbol
+            for_date: Date to get premarket volume for (defaults to today)
+
+        Returns:
+            Total premarket volume or None if no data
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        # Premarket window: 4:00 AM to 9:30 AM ET
+        premarket_start = dt_time(4, 0)
+        premarket_end = self.MARKET_OPEN
+
+        start_ts = self._et_to_timestamp(for_date.date(), premarket_start)
+        end_ts = self._et_to_timestamp(for_date.date(), premarket_end)
+
+        # Try to get premarket bars
+        bars = self.get_bars(symbol, start_ts, end_ts)
+
+        if bars:
+            total_volume = sum(bar['volume'] for bar in bars)
+            if total_volume > 0:
+                logger.debug(f"Premarket volume for {symbol}: {total_volume} ({len(bars)} bars)")
+                return total_volume
+
+        # Fallback: use first 5 minutes of regular session
+        logger.debug(f"No premarket data for {symbol}, using first 5-min volume")
+        first_candle = self.get_first_5min_candle(symbol, for_date)
+        if first_candle:
+            return first_candle['volume']
+
+        return None
+
+    def get_relative_premarket_volume(self, symbol: str, for_date: Optional[datetime] = None,
+                                       lookback_days: int = 20) -> Optional[float]:
+        """
+        Get relative pre-market volume vs 20-day average.
+
+        Compares today's premarket volume to the average premarket volume
+        over the past N trading days.
+
+        Args:
+            symbol: Stock symbol
+            for_date: Date to calculate for (defaults to today)
+            lookback_days: Number of days to average for comparison
+
+        Returns:
+            Relative volume multiple (e.g., 2.5 = 250% of normal)
+            or None if insufficient data
+        """
+        if for_date is None:
+            for_date = self._get_current_et()
+
+        # Get today's premarket volume
+        current_pm_volume = self.get_premarket_volume(symbol, for_date)
+        if current_pm_volume is None or current_pm_volume <= 0:
+            logger.debug(f"No current premarket volume for {symbol}")
+            return None
+
+        # Get historical premarket volumes
+        historical_volumes = []
+
+        for days_ago in range(1, lookback_days + 7):  # Extra days to account for weekends
+            past_date = for_date - timedelta(days=days_ago)
+
+            # Skip weekends
+            if past_date.weekday() >= 5:
+                continue
+
+            pm_volume = self.get_premarket_volume(symbol, past_date)
+            if pm_volume is not None and pm_volume > 0:
+                historical_volumes.append(pm_volume)
+
+            if len(historical_volumes) >= lookback_days:
+                break
+
+        if not historical_volumes:
+            logger.debug(f"No historical premarket volume for {symbol}")
+            return None
+
+        avg_pm_volume = sum(historical_volumes) / len(historical_volumes)
+
+        if avg_pm_volume <= 0:
+            return None
+
+        relative_volume = current_pm_volume / avg_pm_volume
+
+        logger.debug(f"Relative premarket volume for {symbol}: {relative_volume:.2f}x "
+                    f"(current: {current_pm_volume}, avg: {avg_pm_volume:.0f})")
+
+        return relative_volume

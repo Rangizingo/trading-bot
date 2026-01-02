@@ -23,52 +23,45 @@ load_dotenv(dotenv_path="C:/Users/User/Documents/AI/VV7/.env")
 # =============================================================================
 
 class StrategyType(Enum):
-    """Intraday trading strategies (V2 - verified true intraday)."""
-    ORB_V2 = "orb_v2"                       # Simplified ORB (74.56% win rate, 2.51 PF)
-    OVERNIGHT_REVERSAL = "overnight_reversal"  # Buy overnight losers (Sharpe 4.44)
-    STOCKS_IN_PLAY = "stocks_in_play"       # First 5-min candle on high-vol stocks (Sharpe 2.81)
+    """Trading strategies (V3 - LONG ONLY)."""
+    VWAP_RSI2_SWING = "vwap_rsi2_swing"  # VWAP + RSI(2) swing (holds overnight)
+    VWAP_PULLBACK = "vwap_pullback"       # Mid-day mean reversion (10 AM - 2 PM)
+    ORB_15MIN = "orb_15min"               # 15-min ORB breakout (9:45-11 AM)
 
 
 # Strategy-specific configurations
 STRATEGY_CONFIG = {
-    StrategyType.ORB_V2: {
-        "name": "ORB V2 (Simplified)",
-        "win_rate": "74.56%",
-        "profit_factor": 2.51,
+    StrategyType.VWAP_RSI2_SWING: {
+        "name": "VWAP + RSI(2) Swing (Overnight Hold)",
+        "max_positions": 5,
+        "position_size_pct": 0.20,
+        "risk_per_trade_pct": 0.02,
+        "eod_exit_time": time(15, 55),  # 3:55 PM ET (trend check, not forced exit)
+        "min_rvol": 1.5,               # Minimum relative volume
+        "min_adx": 20.0,               # Minimum ADX for trend strength
+        "holds_overnight": True,       # This strategy holds overnight
+        "description": "VWAP + RSI(2) swing: buy oversold above VWAP, hold overnight",
+    },
+    StrategyType.VWAP_PULLBACK: {
+        "name": "VWAP Pullback (Mean Reversion)",
         "max_positions": 5,
         "position_size_pct": 0.10,
-        "risk_per_trade_pct": 0.02,
-        "eod_exit_time": time(15, 0),  # 3:00 PM ET
-        "max_range_width_pct": 0.008,  # 0.8% max range width
-        "target_multiplier": 0.50,     # 50% of range
-        "description": "Breakout above 60-min range (simplified, no VWAP/EMA required)",
+        "risk_per_trade_pct": 0.015,
+        "eod_exit_time": time(14, 0),  # 2:00 PM ET
+        "min_price": 10.0,             # $10 minimum for this strategy
+        "min_avg_volume": 500_000,     # 500k minimum volume
+        "description": "Buy pullbacks to VWAP from above (10 AM - 2 PM, LONG ONLY)",
     },
-    StrategyType.OVERNIGHT_REVERSAL: {
-        "name": "Overnight-Intraday Reversal",
-        "sharpe_ratio": 4.44,
-        "max_positions": 10,
-        "position_size_pct": 0.10,
-        "risk_per_trade_pct": 0.10,  # No stops, higher risk allocation
-        "eod_exit_time": time(16, 0),  # 4:00 PM ET (market close)
-        "entry_window_end": time(9, 45),  # Entries 9:30-9:45 AM (widened from 9:35)
-        "no_stops": True,  # Strategy has no stop loss
-        "description": "Buy bottom decile of overnight losers at open, sell at close",
-    },
-    StrategyType.STOCKS_IN_PLAY: {
-        "name": "ORB Stocks in Play",
-        "sharpe_ratio": 2.81,
-        "win_rate": "17-42%",
-        "max_positions": 5,
+    StrategyType.ORB_15MIN: {
+        "name": "ORB 15-Min (Opening Range Breakout)",
+        "max_positions": 3,
         "position_size_pct": 0.10,
         "risk_per_trade_pct": 0.02,
-        "eod_exit_time": time(16, 0),  # 4:00 PM ET
-        "entry_window_start": time(9, 35),  # After first 5-min candle
-        "entry_window_end": time(9, 50),  # Widened from 9:40 to 9:50
-        "atr_stop_pct": 0.10,  # 10% of ATR for stops
-        "min_avg_volume": 1_000_000,
-        "min_atr": 0.50,
-        "top_n_stocks": 20,
-        "description": "Trade first 5-min candle direction on high-volume stocks",
+        "eod_exit_time": time(11, 0),  # 11:00 AM ET
+        "min_range_pct": 0.003,        # 0.3% minimum range
+        "max_range_pct": 0.015,        # 1.5% maximum range
+        "min_relative_volume": 1.5,    # 1.5x RVOL required
+        "description": "15-min ORB breakout above range high (9:45-11 AM, LONG ONLY)",
     },
 }
 
@@ -117,21 +110,22 @@ ALPACA_HMA_SECRET_KEY = os.environ.get(
 )
 
 # Account configurations with credentials
+# Account mapping: Gap and Go -> ORB account, VWAP Pullback -> WMA account, ORB 15-Min -> HMA account
 ACCOUNTS = {
-    StrategyType.ORB_V2: {
+    StrategyType.VWAP_RSI2_SWING: {
         "api_key": ALPACA_ORB_API_KEY,
         "secret_key": ALPACA_ORB_SECRET_KEY,
-        "name": "ORB_V2",
+        "name": "VWAP_RSI2_SWING",
     },
-    StrategyType.OVERNIGHT_REVERSAL: {
+    StrategyType.VWAP_PULLBACK: {
         "api_key": ALPACA_WMA_API_KEY,
         "secret_key": ALPACA_WMA_SECRET_KEY,
-        "name": "OVERNIGHT_REVERSAL",
+        "name": "VWAP_PULLBACK",
     },
-    StrategyType.STOCKS_IN_PLAY: {
+    StrategyType.ORB_15MIN: {
         "api_key": ALPACA_HMA_API_KEY,
         "secret_key": ALPACA_HMA_SECRET_KEY,
-        "name": "STOCKS_IN_PLAY",
+        "name": "ORB_15MIN",
     },
 }
 

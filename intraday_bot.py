@@ -1,13 +1,13 @@
 """
-Intraday Trading Bot V2
+Trading Bot V3 (LONG ONLY)
 
-Orchestrates 3 verified true intraday trading strategies:
-- ORB_V2: Simplified ORB (74.56% win rate, 2.51 profit factor)
-- OVERNIGHT_REVERSAL: Buy overnight losers (Sharpe 4.44)
-- STOCKS_IN_PLAY: First 5-min candle on high-vol stocks (Sharpe 2.81)
+Orchestrates 3 trading strategies:
+- VWAP_RSI2_SWING: VWAP + RSI(2) swing (holds overnight, exits next AM)
+- VWAP_PULLBACK: Mid-day mean reversion (10:00 AM - 2:00 PM)
+- ORB_15MIN: 15-min Opening Range Breakout (9:45-11:00 AM)
 
 Each strategy runs on its own Alpaca paper trading account.
-All positions are closed by end of day (no overnight holds).
+All strategies are LONG ONLY (no shorting, no margin required).
 
 Usage:
     python intraday_bot.py [--paper]
@@ -30,13 +30,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     StrategyType, STRATEGY_CONFIG, ACCOUNTS,
     INTRADAY_DB_PATH, SYNC_COMPLETE_FILE,
-    MARKET_OPEN, MARKET_CLOSE, OPENING_RANGE_END,
-    CYCLE_INTERVAL_MINUTES, MIN_PRICE, MIN_VOLUME,
+    MARKET_OPEN, MARKET_CLOSE,
+    CYCLE_INTERVAL_MINUTES, MIN_PRICE,
     LOG_DIR, ET,
 )
 from data.intraday_indicators import IntradayIndicators
-from data.historical_data import HistoricalData
-from strategies import ORBV2Strategy, OvernightReversalStrategy, StocksInPlayStrategy
+from strategies import VwapRsi2SwingStrategy, VWAPPullbackStrategy, ORB15MinStrategy
+from data.indicators_db import IndicatorsDB
 from strategies.base_strategy import EntrySignal, ExitSignal
 from execution.alpaca_client import AlpacaClient
 
@@ -140,105 +140,94 @@ class IntradayBot:
         self.positions: Dict[StrategyType, Dict[str, Position]] = {}
         self.loggers: Dict[StrategyType, logging.Logger] = {}
         self.session_pnl: Dict[StrategyType, float] = {}
-        self.historical_data: Optional[HistoricalData] = None
 
         # Track which strategies have had EOD exits triggered today
         # This prevents repeated exit attempts and allows safety EOD logic
         self._eod_exits_triggered: Dict[StrategyType, datetime] = {}
 
-        self._init_orb_v2(paper)
-        self._init_overnight_reversal(paper)
-        self._init_stocks_in_play(paper)
+        self._init_vwap_rsi2_swing(paper)
+        self._init_vwap_pullback(paper)
+        self._init_orb_15min(paper)
 
         # Graceful shutdown
         signal.signal(signal.SIGINT, self._handle_shutdown)
         signal.signal(signal.SIGTERM, self._handle_shutdown)
 
-    def _init_orb_v2(self, paper: bool):
-        """Initialize ORB V2 strategy components."""
-        config = STRATEGY_CONFIG[StrategyType.ORB_V2]
-        account = ACCOUNTS[StrategyType.ORB_V2]
+    def _init_vwap_rsi2_swing(self, paper: bool):
+        """Initialize VWAP + RSI(2) Swing strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.VWAP_RSI2_SWING]
+        account = ACCOUNTS[StrategyType.VWAP_RSI2_SWING]
 
-        self.clients[StrategyType.ORB_V2] = AlpacaClient(
+        self.clients[StrategyType.VWAP_RSI2_SWING] = AlpacaClient(
             paper=paper,
             api_key=account["api_key"],
             secret_key=account["secret_key"],
-            name="ORB_V2"
+            name="VWAP_RSI2_SWING"
         )
-        self.strategies[StrategyType.ORB_V2] = ORBV2Strategy(
+        # Initialize IndicatorsDB for RSI2/CRSI/SMA200/ADX access
+        indicators_db = IndicatorsDB()
+        self.strategies[StrategyType.VWAP_RSI2_SWING] = VwapRsi2SwingStrategy(
             indicators=self.indicators,
-            max_positions=config["max_positions"],
-            position_size_pct=config["position_size_pct"],
-            risk_per_trade_pct=config["risk_per_trade_pct"],
-            eod_exit_time=config["eod_exit_time"],
-            min_price=MIN_PRICE,
-            max_range_width_pct=config.get("max_range_width_pct", 0.008),
-        )
-        self.positions[StrategyType.ORB_V2] = {}
-        self.loggers[StrategyType.ORB_V2] = setup_logging("ORB_V2")
-        self.session_pnl[StrategyType.ORB_V2] = 0.0
-
-    def _init_overnight_reversal(self, paper: bool):
-        """Initialize Overnight Reversal strategy components."""
-        config = STRATEGY_CONFIG[StrategyType.OVERNIGHT_REVERSAL]
-        account = ACCOUNTS[StrategyType.OVERNIGHT_REVERSAL]
-
-        self.clients[StrategyType.OVERNIGHT_REVERSAL] = AlpacaClient(
-            paper=paper,
-            api_key=account["api_key"],
-            secret_key=account["secret_key"],
-            name="OVERNIGHT_REVERSAL"
-        )
-        self.strategies[StrategyType.OVERNIGHT_REVERSAL] = OvernightReversalStrategy(
-            indicators=self.indicators,
+            indicators_db=indicators_db,
             max_positions=config["max_positions"],
             position_size_pct=config["position_size_pct"],
             risk_per_trade_pct=config["risk_per_trade_pct"],
             eod_exit_time=config["eod_exit_time"],
             min_price=MIN_PRICE,
         )
-        self.positions[StrategyType.OVERNIGHT_REVERSAL] = {}
-        self.loggers[StrategyType.OVERNIGHT_REVERSAL] = setup_logging("OVERNIGHT_REVERSAL")
-        self.session_pnl[StrategyType.OVERNIGHT_REVERSAL] = 0.0
+        self.positions[StrategyType.VWAP_RSI2_SWING] = {}
+        self.loggers[StrategyType.VWAP_RSI2_SWING] = setup_logging("VWAP_RSI2_SWING")
+        self.session_pnl[StrategyType.VWAP_RSI2_SWING] = 0.0
 
-    def _init_stocks_in_play(self, paper: bool):
-        """Initialize Stocks in Play strategy components."""
-        config = STRATEGY_CONFIG[StrategyType.STOCKS_IN_PLAY]
-        account = ACCOUNTS[StrategyType.STOCKS_IN_PLAY]
+    def _init_vwap_pullback(self, paper: bool):
+        """Initialize VWAP Pullback strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.VWAP_PULLBACK]
+        account = ACCOUNTS[StrategyType.VWAP_PULLBACK]
 
-        self.clients[StrategyType.STOCKS_IN_PLAY] = AlpacaClient(
+        self.clients[StrategyType.VWAP_PULLBACK] = AlpacaClient(
             paper=paper,
             api_key=account["api_key"],
             secret_key=account["secret_key"],
-            name="STOCKS_IN_PLAY"
+            name="VWAP_PULLBACK"
         )
-
-        # Initialize historical data helper for ATR (shares API key with this account)
-        try:
-            self.historical_data = HistoricalData(
-                api_key=account["api_key"],
-                secret_key=account["secret_key"]
-            )
-        except Exception as e:
-            self.console.warning(f"Failed to initialize HistoricalData: {e}")
-            self.historical_data = None
-
-        self.strategies[StrategyType.STOCKS_IN_PLAY] = StocksInPlayStrategy(
+        self.strategies[StrategyType.VWAP_PULLBACK] = VWAPPullbackStrategy(
             indicators=self.indicators,
-            historical_data=self.historical_data,
+            max_positions=config["max_positions"],
+            position_size_pct=config["position_size_pct"],
+            risk_per_trade_pct=config["risk_per_trade_pct"],
+            eod_exit_time=config["eod_exit_time"],
+            min_price=config.get("min_price", 10.0),
+            min_avg_volume=config.get("min_avg_volume", 500_000),
+        )
+        self.positions[StrategyType.VWAP_PULLBACK] = {}
+        self.loggers[StrategyType.VWAP_PULLBACK] = setup_logging("VWAP_PULLBACK")
+        self.session_pnl[StrategyType.VWAP_PULLBACK] = 0.0
+
+    def _init_orb_15min(self, paper: bool):
+        """Initialize ORB 15-Min strategy components."""
+        config = STRATEGY_CONFIG[StrategyType.ORB_15MIN]
+        account = ACCOUNTS[StrategyType.ORB_15MIN]
+
+        self.clients[StrategyType.ORB_15MIN] = AlpacaClient(
+            paper=paper,
+            api_key=account["api_key"],
+            secret_key=account["secret_key"],
+            name="ORB_15MIN"
+        )
+        self.strategies[StrategyType.ORB_15MIN] = ORB15MinStrategy(
+            indicators=self.indicators,
             max_positions=config["max_positions"],
             position_size_pct=config["position_size_pct"],
             risk_per_trade_pct=config["risk_per_trade_pct"],
             eod_exit_time=config["eod_exit_time"],
             min_price=MIN_PRICE,
-            min_avg_volume=config.get("min_avg_volume", 1_000_000),
-            min_atr=config.get("min_atr", 0.50),
-            atr_stop_pct=config.get("atr_stop_pct", 0.10),
-            top_n_stocks=config.get("top_n_stocks", 20),
+            min_range_pct=config.get("min_range_pct", 0.003),
+            max_range_pct=config.get("max_range_pct", 0.015),
+            min_relative_volume=config.get("min_relative_volume", 1.5),
         )
-        self.positions[StrategyType.STOCKS_IN_PLAY] = {}
-        self.loggers[StrategyType.STOCKS_IN_PLAY] = setup_logging("STOCKS_IN_PLAY")
-        self.session_pnl[StrategyType.STOCKS_IN_PLAY] = 0.0
+        self.positions[StrategyType.ORB_15MIN] = {}
+        self.loggers[StrategyType.ORB_15MIN] = setup_logging("ORB_15MIN")
+        self.session_pnl[StrategyType.ORB_15MIN] = 0.0
 
     def _handle_shutdown(self, signum, frame):
         """Handle graceful shutdown."""
@@ -551,30 +540,25 @@ class IntradayBot:
                 fill_price = result['fill_price']
                 filled_qty = result.get('qty', shares)
 
-                # Recalculate target based on actual fill price (not signal price)
-                # This fixes the bug where slippage causes "target hit" with negative P&L
+                # Use signal's target/stop (strategies handle their own calculations)
                 adjusted_target = signal.target
                 adjusted_stop = signal.stop
 
-                # For ORB_V2: ALWAYS recalculate target from actual fill price
-                # Target = fill_price + (range_size * 0.50)
-                if strategy_type == StrategyType.ORB_V2:
+                # For ORB_15MIN: Recalculate target from actual fill price
+                # Target = fill_price + (range_size * 1.0)
+                if strategy_type == StrategyType.ORB_15MIN:
                     range_size = signal.metadata.get('range_size') if signal.metadata else None
                     if range_size:
-                        TARGET_MULTIPLIER = 0.50  # 50% of range height
+                        TARGET_MULTIPLIER = 1.0  # 100% of range height
                         adjusted_target = fill_price + (range_size * TARGET_MULTIPLIER)
                         logger.info(f"[{name}] Target for {signal.symbol}: ${adjusted_target:.2f} "
                                   f"(fill=${fill_price:.2f} + {TARGET_MULTIPLIER:.0%} of range=${range_size:.2f})")
-                    else:
-                        # Fallback: no range_size in metadata, use signal target but ensure it's above entry
-                        logger.warning(f"[{name}] No range_size in metadata for {signal.symbol}, using signal target")
 
-                    # Safety check: target must be above entry for long positions
-                    if direction == 'long' and adjusted_target and adjusted_target <= fill_price:
-                        # This should never happen, but if it does, set a minimum target
-                        logger.error(f"[{name}] Invalid target ${adjusted_target:.2f} <= entry ${fill_price:.2f}, "
-                                   f"setting minimum target")
-                        adjusted_target = fill_price * 1.005  # 0.5% minimum target
+                # Safety check: target must be above entry for long positions
+                if direction == 'long' and adjusted_target and adjusted_target <= fill_price:
+                    logger.error(f"[{name}] Invalid target ${adjusted_target:.2f} <= entry ${fill_price:.2f}, "
+                               f"setting minimum target")
+                    adjusted_target = fill_price * 1.005  # 0.5% minimum target
 
                 # Track position
                 self.positions[strategy_type][signal.symbol] = Position(
@@ -589,9 +573,8 @@ class IntradayBot:
                     metadata=signal.metadata or {},
                 )
 
-                # Record trade in ORB V2 daily tracker if applicable
-                if strategy_type == StrategyType.ORB_V2:
-                    self.strategies[strategy_type].record_entry(signal.symbol)
+                # Record trade in strategy's daily tracker
+                self.strategies[strategy_type].record_entry(signal.symbol)
 
                 # Log trade
                 self._log_trade(strategy_type, signal.symbol, 'ENTRY',
@@ -797,14 +780,14 @@ class IntradayBot:
         """Main bot loop."""
         self.console.info("")
         self.console.info("=" * 60)
-        self.console.info("INTRADAY TRADING BOT V2")
-        self.console.info("3 Verified Strategies | 3 Accounts | Intraday Only")
+        self.console.info("INTRADAY TRADING BOT V3 (LONG ONLY)")
+        self.console.info("3 Strategies | 3 Accounts | Intraday Only")
         self.console.info("=" * 60)
         self.console.info("")
         self.console.info("Strategies:")
-        self.console.info("  - ORB_V2: Simplified ORB (74.56% WR, 2.51 PF)")
-        self.console.info("  - OVERNIGHT_REVERSAL: Buy gap-downs (Sharpe 4.44)")
-        self.console.info("  - STOCKS_IN_PLAY: First 5-min candle (Sharpe 2.81)")
+        self.console.info("  - VWAP_RSI2_SWING: RSI(2) oversold + VWAP (holds overnight)")
+        self.console.info("  - VWAP_PULLBACK: Mid-day mean reversion (10 AM-2 PM)")
+        self.console.info("  - ORB_15MIN: 15-min ORB breakout (9:45-11 AM)")
         self.console.info("")
 
         # Startup checks
